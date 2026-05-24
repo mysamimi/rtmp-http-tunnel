@@ -1,0 +1,36 @@
+# Binaries
+rtmp-http-tunnel
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+*.test
+*.out
+
+# Temporary stream directories
+/tmp_client/
+/tmp_server/
+/pkg/client/tmp_client/
+/pkg/server/tmp_server/
+
+# IDEs
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# OS generated files
+.DS_Store
+.DS_Store?
+ehthumbs.db
+Icon?
+Thumbs.db
+
+# Log files
+*.log

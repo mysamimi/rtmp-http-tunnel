@@ -1,0 +1,23 @@
+{
+  "mode": "client",
+  "client": {
+    "local_rtmp_addr": "127.0.0.1:1935",
+    "server_url": "https://your-server-ip:8443",
+    "auth_token": "a-strong-random-shared-secret-token",
+    "concurrency": 4,
+    "chunk_duration": 2,
+    "obfuscation_key": "some-secret-xor-obfuscation-key",
+    "temp_dir": "./tmp_client"
+  },
+  "server": {
+    "listen_addr": ":8443",
+    "auth_token": "a-strong-random-shared-secret-token",
+    "obfuscation_key": "some-secret-xor-obfuscation-key",
+    "buffer_duration": 60,
+    "chunk_duration": 2,
+    "target_rtmp_url": "rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx-xxxx",
+    "temp_dir": "./tmp_server",
+    "tls_cert_file": "/etc/letsencrypt/live/your-server-ip/fullchain.pem",
+    "tls_key_file": "/etc/letsencrypt/live/your-server-ip/privkey.pem"
+  }
+}
