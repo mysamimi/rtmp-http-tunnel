@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"rtmp-http-tunnel/pkg/common"
 )
@@ -26,7 +28,7 @@ func NewReceiver(cfg *common.ServerConfig, buffer *Buffer) *Receiver {
 }
 
 // Start launches the HTTP/HTTPS receiver server
-func (r *Receiver) Start() error {
+func (r *Receiver) Start(ctx context.Context) error {
 	// Ensure temp directory exists
 	if err := os.MkdirAll(r.cfg.TempDir, 0755); err != nil {
 		return fmt.Errorf("failed to create server temp dir: %w", err)
@@ -44,14 +46,31 @@ func (r *Receiver) Start() error {
 		Handler: mux,
 	}
 
+	// Set up graceful shutdown listener
+	go func() {
+		<-ctx.Done()
+		log.Println("[Receiver] Shutting down HTTP server...")
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			log.Printf("[Receiver] HTTP server Shutdown error: %v", err)
+		}
+	}()
+
 	// Determine if running HTTP or HTTPS
+	var err error
 	if r.cfg.TLSCertFile != "" && r.cfg.TLSKeyFile != "" {
 		log.Printf("[Receiver] Starting HTTPS server on %s", r.cfg.ListenAddr)
-		return server.ListenAndServeTLS(r.cfg.TLSCertFile, r.cfg.TLSKeyFile)
+		err = server.ListenAndServeTLS(r.cfg.TLSCertFile, r.cfg.TLSKeyFile)
 	} else {
 		log.Printf("[Receiver] Starting HTTP server on %s (Warning: Not encrypted at network layer)", r.cfg.ListenAddr)
-		return server.ListenAndServe()
+		err = server.ListenAndServe()
 	}
+
+	if err != http.ErrServerClosed {
+		return err
+	}
+	return nil
 }
 
 func (r *Receiver) handleHealth(w http.ResponseWriter, req *http.Request) {
@@ -109,6 +128,11 @@ func (r *Receiver) handleUpload(w http.ResponseWriter, req *http.Request) {
 
 	// 4. Decrypt / De-obfuscate Chunk
 	decryptedData := common.XORApply(bodyBytes, r.cfg.ObfuscationKey)
+
+	// Verify MPEG-TS sync byte (0x47 / 'G') to detect key mismatch or corruption
+	if len(decryptedData) > 0 && decryptedData[0] != 0x47 {
+		log.Printf("[Receiver] WARNING: Decrypted chunk %s does not start with MPEG-TS sync byte (0x47, 'G'). Your obfuscation_key might be mismatched between client and server!", filename)
+	}
 
 	// 5. Save Chunk to Temp Directory
 	filePath := filepath.Join(r.cfg.TempDir, filename)

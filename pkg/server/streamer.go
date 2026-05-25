@@ -36,18 +36,37 @@ func (s *Streamer) Start(ctx context.Context) error {
 		log.Printf("[Streamer] Starting FFmpeg restreamer output to: %s", s.cfg.TargetRTMPURL)
 
 		// Start FFmpeg to read from stdin (-) and output to RTMP.
-		// -re: read input in real time
-		// -i -: read from stdin
-		// -c copy: copy video/audio codecs without transcoding (saves CPU)
-		// -f flv: output format for RTMP ingest
-		cmd := exec.CommandContext(ctx, "ffmpeg",
-			"-loglevel", "info",
-			"-re",
-			"-i", "-",
-			"-c", "copy",
-			"-f", "flv",
-			s.cfg.TargetRTMPURL,
-		)
+		var cmd *exec.Cmd
+		if s.cfg.UseDocker {
+			image := s.cfg.DockerImage
+			if image == "" {
+				image = "linuxserver/ffmpeg"
+			}
+			cmd = exec.CommandContext(ctx, "docker", "run", "--rm", "-i",
+				image,
+				"-loglevel", "info",
+				"-nostdin",
+				"-re",
+				"-f", "mpegts",
+				"-i", "-",
+				"-c", "copy",
+				"-f", "flv",
+				s.cfg.TargetRTMPURL,
+			)
+			log.Printf("[Streamer] Running FFmpeg in Docker (%s)...", image)
+		} else {
+			cmd = exec.CommandContext(ctx, "ffmpeg",
+				"-loglevel", "info",
+				"-nostdin",
+				"-re",
+				"-f", "mpegts",
+				"-i", "-",
+				"-c", "copy",
+				"-f", "flv",
+				s.cfg.TargetRTMPURL,
+			)
+			log.Println("[Streamer] Running native FFmpeg...")
+		}
 
 		stdinPipe, err := cmd.StdinPipe()
 		if err != nil {

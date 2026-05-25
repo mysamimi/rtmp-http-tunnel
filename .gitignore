@@ -34,3 +34,6 @@ Thumbs.db
 
 # Log files
 *.log
+
+# local files
+config.json

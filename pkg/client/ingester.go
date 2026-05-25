@@ -52,6 +52,35 @@ func (in *Ingester) Start(ctx context.Context) error {
 	// Regexp to extract sequence number from chunk file name (e.g., chunk_12.ts)
 	seqRegexp := regexp.MustCompile(`chunk_(\d+)\.ts`)
 
+	// Extract port from LocalRTMPAddr
+	port := "1935"
+	parts := strings.Split(in.cfg.LocalRTMPAddr, ":")
+	if len(parts) > 1 {
+		portPart := parts[len(parts)-1]
+		if slashIdx := strings.Index(portPart, "/"); slashIdx != -1 {
+			port = portPart[:slashIdx]
+		} else {
+			port = portPart
+		}
+	}
+
+	containerName := fmt.Sprintf("rtmp-http-tunnel-client-%s", port)
+
+	// Clean up any leftover container on startup
+	if in.cfg.UseDocker {
+		log.Printf("[Ingester] Pre-cleaning Docker container %s...", containerName)
+		_ = exec.Command("docker", "rm", "-f", containerName).Run()
+	}
+
+	// Register graceful cleanup for the Docker container when Ingester exits
+	defer func() {
+		if in.cfg.UseDocker {
+			log.Printf("[Ingester] Cleaning up Docker container %s...", containerName)
+			// Using background context to ensure this runs even if the parent context is cancelled
+			_ = exec.Command("docker", "rm", "-f", containerName).Run()
+		}
+	}()
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -59,20 +88,58 @@ func (in *Ingester) Start(ctx context.Context) error {
 		default:
 		}
 
-		// Prepare ffmpeg command
-		// ffmpeg -listen 1 -i rtmp://<addr> -c copy -f hls -hls_time <duration> -hls_list_size 999999 -hls_segment_filename <temp_dir>/chunk_%d.ts <temp_dir>/index.m3u8
-		// Using -listen 1 enables single-run RTMP listener mode. When client disconnects, ffmpeg exits.
-		cmd := exec.CommandContext(ctx, "ffmpeg",
-			"-loglevel", "info",
-			"-listen", "1",
-			"-i", fmt.Sprintf("rtmp://%s", in.cfg.LocalRTMPAddr),
-			"-c", "copy",
-			"-f", "hls",
-			"-hls_time", strconv.Itoa(in.cfg.ChunkDuration),
-			"-hls_list_size", "9999999", // keep index long enough
-			"-hls_segment_filename", filepath.Join(in.cfg.TempDir, "chunk_%d.ts"),
-			playlistPath,
-		)
+		var cmd *exec.Cmd
+		if in.cfg.UseDocker {
+			absTempDir, err := filepath.Abs(in.cfg.TempDir)
+			if err != nil {
+				log.Printf("[Ingester] Failed to resolve absolute path of temp dir: %v", err)
+				time.Sleep(2 * time.Second)
+				continue
+			}
+
+			image := in.cfg.DockerImage
+			if image == "" {
+				image = "linuxserver/ffmpeg"
+			}
+
+			// We map host port to container's 1935 port where FFmpeg listens.
+			cmd = exec.CommandContext(ctx, "docker", "run", "--rm",
+				"--name", containerName,
+				"-p", fmt.Sprintf("%s:1935", port),
+				"-v", fmt.Sprintf("%s:/tmp_client", absTempDir),
+				image,
+				"-loglevel", "info",
+				"-f", "flv",
+				"-listen", "1",
+				"-i", "rtmp://0.0.0.0:1935/live/app",
+				"-c", "copy",
+				"-f", "hls",
+				"-hls_time", strconv.Itoa(in.cfg.ChunkDuration),
+				"-hls_list_size", "9999999",
+				"-hls_segment_filename", "/tmp_client/chunk_%d.ts",
+				"/tmp_client/index.m3u8",
+			)
+			log.Printf("[Ingester] Running FFmpeg in Docker (%s), mapping port %s -> 1935...", image, port)
+		} else {
+			rtmpURL := fmt.Sprintf("rtmp://%s", in.cfg.LocalRTMPAddr)
+			if !strings.Contains(in.cfg.LocalRTMPAddr, "/") {
+				rtmpURL = fmt.Sprintf("rtmp://%s/live/app", in.cfg.LocalRTMPAddr)
+			}
+
+			cmd = exec.CommandContext(ctx, "ffmpeg",
+				"-loglevel", "info",
+				"-f", "flv",
+				"-listen", "1",
+				"-i", rtmpURL,
+				"-c", "copy",
+				"-f", "hls",
+				"-hls_time", strconv.Itoa(in.cfg.ChunkDuration),
+				"-hls_list_size", "9999999", // keep index long enough
+				"-hls_segment_filename", filepath.Join(in.cfg.TempDir, "chunk_%d.ts"),
+				playlistPath,
+			)
+			log.Printf("[Ingester] Running native FFmpeg, listening on %s...", rtmpURL)
+		}
 
 		// Capture stderr for logging if needed
 		stderr, err := cmd.StderrPipe()
@@ -96,8 +163,8 @@ func (in *Ingester) Start(ctx context.Context) error {
 			for {
 				n, err := stderr.Read(buf)
 				if n > 0 {
-					// You can uncomment this if you need ffmpeg detailed debug logs
-					// log.Printf("[FFmpeg] %s", string(buf[:n]))
+					// Log ffmpeg detailed debug logs
+					log.Printf("[FFmpeg] %s", string(buf[:n]))
 				}
 				if err != nil {
 					break

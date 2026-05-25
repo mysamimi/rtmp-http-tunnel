@@ -13,6 +13,8 @@ type ClientConfig struct {
 	ChunkDuration  int    `json:"chunk_duration"`   // Target duration for each TS chunk in seconds
 	ObfuscationKey string `json:"obfuscation_key"`  // Key for XOR encrypting chunk data
 	TempDir        string `json:"temp_dir"`         // Temp dir to store generated TS files
+	UseDocker      bool   `json:"use_docker"`       // Whether to run FFmpeg inside Docker container
+	DockerImage    string `json:"docker_image"`     // Docker image name, e.g. "linuxserver/ffmpeg"
 }
 
 type ServerConfig struct {
@@ -25,6 +27,8 @@ type ServerConfig struct {
 	TempDir        string `json:"temp_dir"`         // Temp dir to store received TS files
 	TLSCertFile    string `json:"tls_cert_file"`    // Optional: path to SSL cert file for HTTPS
 	TLSKeyFile     string `json:"tls_key_file"`     // Optional: path to SSL key file for HTTPS
+	UseDocker      bool   `json:"use_docker"`       // Whether to run FFmpeg inside Docker container
+	DockerImage    string `json:"docker_image"`     // Docker image name, e.g. "linuxserver/ffmpeg"
 }
 
 type Config struct {

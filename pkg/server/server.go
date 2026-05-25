@@ -32,5 +32,5 @@ func (s *Server) Start(ctx context.Context) error {
 	log.Println("[Server] Server orchestrator started successfully")
 
 	// Start HTTP/HTTPS receiver (blocks until server stops or error occurs)
-	return receiver.Start()
+	return receiver.Start(ctx)
 }
