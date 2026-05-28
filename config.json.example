@@ -12,7 +12,7 @@
     "streams": [
       {
         "stream_path": "stream_abc123",
-        "local_rtmp_addr": "127.0.0.1:1935",
+        "input_url": "rtmp://0.0.0.0:1935",
         "temp_dir": "./tmp_client/stream_abc123"
       }
     ]

@@ -6,9 +6,9 @@ import (
 )
 
 type StreamConfig struct {
-	StreamPath    string `json:"stream_path"`
-	LocalRTMPAddr string `json:"local_rtmp_addr"`
-	TempDir       string `json:"temp_dir"`
+	StreamPath string `json:"stream_path"`
+	InputURL   string `json:"input_url"`
+	TempDir    string `json:"temp_dir"`
 }
 
 type ClientConfig struct {

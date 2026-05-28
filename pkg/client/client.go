@@ -35,7 +35,7 @@ func (c *Client) Start(ctx context.Context) error {
 }
 
 func runStream(ctx context.Context, cfg *common.ClientConfig, sc common.StreamConfig) {
-	log.Printf("[Client] Starting stream pipeline for path: %s (RTMP: %s, Temp: %s)", sc.StreamPath, sc.LocalRTMPAddr, sc.TempDir)
+	log.Printf("[Client] Starting stream pipeline for path: %s (Input: %s, Temp: %s)", sc.StreamPath, sc.InputURL, sc.TempDir)
 
 	// Ensure local temp dir exists
 	if err := os.MkdirAll(sc.TempDir, 0755); err != nil {

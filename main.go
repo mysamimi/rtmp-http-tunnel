@@ -34,9 +34,9 @@ func main() {
 				MaxUploadRetries: 5,
 				Streams: []common.StreamConfig{
 					{
-						StreamPath:    "default_stream",
-						LocalRTMPAddr: "127.0.0.1:1935",
-						TempDir:       "./tmp_client/default_stream",
+						StreamPath: "default_stream",
+						InputURL:   "rtmp://0.0.0.0:1935",
+						TempDir:    "./tmp_client/default_stream",
 					},
 				},
 			},

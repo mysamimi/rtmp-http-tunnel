@@ -38,7 +38,7 @@ func NewIngester(cfg *common.ClientConfig, stream common.StreamConfig, chunkChan
 	}
 }
 
-// Start runs the FFmpeg RTMP listener and HLS segmenter loop.
+// Start runs the FFmpeg listener or pull stream and HLS segmenter loop.
 func (in *Ingester) Start(ctx context.Context) error {
 	// Create temp directory if it doesn't exist
 	if err := os.MkdirAll(in.stream.TempDir, 0755); err != nil {
@@ -50,25 +50,23 @@ func (in *Ingester) Start(ctx context.Context) error {
 
 	playlistPath := filepath.Join(in.stream.TempDir, "index.m3u8")
 
-	log.Printf("[Ingester %s] Starting local RTMP listener on rtmp://%s", in.stream.StreamPath, in.stream.LocalRTMPAddr)
+	spec, err := ParseInputURL(in.stream.InputURL)
+	if err != nil {
+		return fmt.Errorf("invalid input_url: %w", err)
+	}
+
+	log.Printf("[Ingester %s] Starting pipeline for input: %s (Listener: %v)", in.stream.StreamPath, in.stream.InputURL, spec.IsListener)
 	log.Printf("[Ingester %s] Storing temporary HLS chunks in %s", in.stream.StreamPath, in.stream.TempDir)
 
 	// Regexp to extract sequence number from chunk file name (e.g., chunk_12.ts)
 	seqRegexp := regexp.MustCompile(`chunk_(\d+)\.ts`)
 
-	// Extract port from LocalRTMPAddr
-	port := "1935"
-	parts := strings.Split(in.stream.LocalRTMPAddr, ":")
-	if len(parts) > 1 {
-		portPart := parts[len(parts)-1]
-		if slashIdx := strings.Index(portPart, "/"); slashIdx != -1 {
-			port = portPart[:slashIdx]
-		} else {
-			port = portPart
-		}
+	var containerName string
+	if spec.IsListener && spec.ListenPort != "" {
+		containerName = fmt.Sprintf("rtmp-http-tunnel-client-%s-%s", spec.ListenPort, in.stream.StreamPath)
+	} else {
+		containerName = fmt.Sprintf("rtmp-http-tunnel-client-pull-%s", in.stream.StreamPath)
 	}
-
-	containerName := fmt.Sprintf("rtmp-http-tunnel-client-%s-%s", port, in.stream.StreamPath)
 
 	// Clean up any leftover container on startup
 	if in.cfg.UseDocker {
@@ -87,6 +85,8 @@ func (in *Ingester) Start(ctx context.Context) error {
 
 	var wg sync.WaitGroup
 	defer wg.Wait()
+
+	isRTMP := strings.HasPrefix(strings.ToLower(in.stream.InputURL), "rtmp:") || strings.HasPrefix(strings.ToLower(in.stream.InputURL), "rtmps:")
 
 	for {
 		select {
@@ -109,16 +109,23 @@ func (in *Ingester) Start(ctx context.Context) error {
 				image = "linuxserver/ffmpeg"
 			}
 
-			// We map host port to container's 1935 port where FFmpeg listens.
-			cmd = exec.CommandContext(ctx, "docker", "run", "--rm",
+			dockerArgs := []string{
+				"run", "--rm",
 				"--name", containerName,
-				"-p", fmt.Sprintf("%s:1935", port),
+			}
+			if spec.IsListener && spec.ListenPort != "" {
+				dockerArgs = append(dockerArgs, "-p", fmt.Sprintf("%s:%s", spec.ListenPort, spec.ListenPort))
+			}
+			dockerArgs = append(dockerArgs,
 				"-v", fmt.Sprintf("%s:/tmp_client", absTempDir),
 				image,
 				"-loglevel", "info",
-				"-f", "flv",
-				"-listen", "1",
-				"-i", "rtmp://0.0.0.0:1935/live/app",
+			)
+			if spec.IsListener && isRTMP {
+				dockerArgs = append(dockerArgs, "-listen", "1")
+			}
+			dockerArgs = append(dockerArgs,
+				"-i", spec.DockerInputURL,
 				"-c", "copy",
 				"-f", "hls",
 				"-hls_time", strconv.Itoa(in.cfg.ChunkDuration),
@@ -126,26 +133,28 @@ func (in *Ingester) Start(ctx context.Context) error {
 				"-hls_segment_filename", "/tmp_client/chunk_%d.ts",
 				"/tmp_client/index.m3u8",
 			)
-			log.Printf("[Ingester %s] Running FFmpeg in Docker (%s), mapping port %s -> 1935...", in.stream.StreamPath, image, port)
-		} else {
-			rtmpURL := fmt.Sprintf("rtmp://%s", in.stream.LocalRTMPAddr)
-			if !strings.Contains(in.stream.LocalRTMPAddr, "/") {
-				rtmpURL = fmt.Sprintf("rtmp://%s/live/app", in.stream.LocalRTMPAddr)
-			}
 
-			cmd = exec.CommandContext(ctx, "ffmpeg",
+			cmd = exec.CommandContext(ctx, "docker", dockerArgs...)
+			log.Printf("[Ingester %s] Running FFmpeg in Docker (%s), input URL: %s", in.stream.StreamPath, image, spec.DockerInputURL)
+		} else {
+			nativeArgs := []string{
 				"-loglevel", "info",
-				"-f", "flv",
-				"-listen", "1",
-				"-i", rtmpURL,
+			}
+			if spec.IsListener && isRTMP {
+				nativeArgs = append(nativeArgs, "-listen", "1")
+			}
+			nativeArgs = append(nativeArgs,
+				"-i", spec.FFmpegInputURL,
 				"-c", "copy",
 				"-f", "hls",
 				"-hls_time", strconv.Itoa(in.cfg.ChunkDuration),
-				"-hls_list_size", "9999999", // keep index long enough
+				"-hls_list_size", "9999999",
 				"-hls_segment_filename", filepath.Join(in.stream.TempDir, "chunk_%d.ts"),
 				playlistPath,
 			)
-			log.Printf("[Ingester %s] Running native FFmpeg, listening on %s...", in.stream.StreamPath, rtmpURL)
+
+			cmd = exec.CommandContext(ctx, "ffmpeg", nativeArgs...)
+			log.Printf("[Ingester %s] Running native FFmpeg, input URL: %s", in.stream.StreamPath, spec.FFmpegInputURL)
 		}
 
 		// Capture stderr for logging if needed
@@ -162,7 +171,11 @@ func (in *Ingester) Start(ctx context.Context) error {
 			continue
 		}
 
-		log.Printf("[Ingester %s] FFmpeg listener started, waiting for stream connection...", in.stream.StreamPath)
+		if spec.IsListener {
+			log.Printf("[Ingester %s] FFmpeg listener started, waiting for stream connection...", in.stream.StreamPath)
+		} else {
+			log.Printf("[Ingester %s] FFmpeg pull connection started...", in.stream.StreamPath)
+		}
 
 		// Run stderr reader in goroutine to log stream state
 		go func() {
@@ -191,7 +204,7 @@ func (in *Ingester) Start(ctx context.Context) error {
 		err = cmd.Wait()
 		monitorCancel()
 
-		log.Printf("[Ingester %s] FFmpeg stream disconnected: %v. Restarting listener...", in.stream.StreamPath, err)
+		log.Printf("[Ingester %s] FFmpeg process exited: %v. Restarting...", in.stream.StreamPath, err)
 		in.cleanupTempDir() // Clean up for the next session
 
 		select {

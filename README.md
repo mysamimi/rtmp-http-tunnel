@@ -60,12 +60,12 @@ Copy `config.json.example` to `config.json` and adjust parameters:
     "streams": [
       {
         "stream_path": "stream_abc123",
-        "local_rtmp_addr": "127.0.0.1:1935",
+        "input_url": "rtmp://0.0.0.0:1935",
         "temp_dir": "./tmp_client/stream_abc123"
       },
       {
         "stream_path": "stream_xyz456",
-        "local_rtmp_addr": "127.0.0.1:1936",
+        "input_url": "srt://0.0.0.0:9000",
         "temp_dir": "./tmp_client/stream_xyz456"
       }
     ]
@@ -103,7 +103,14 @@ Copy `config.json.example` to `config.json` and adjust parameters:
 - `"inactive_session_timeout"`: Server-side inactivity timeout (seconds). If no chunk uploads are received for a stream within this duration, the server terminates its streamer process and cleans up.
 - `"streams"` (Client): Array of local streaming pipelines, defining:
   - `"stream_path"`: Server route identifier (`/s/{stream_path}/upload`).
-  - `"local_rtmp_addr"`: Local port OBS/Encoder will connect to.
+  - `"input_url"`: Universal input URL. Supported formats:
+    - RTMP (Listener): `rtmp://0.0.0.0:1935` (zero IP host binds listener)
+    - RTMP (Pull/Connect): `rtmp://192.168.1.100:1935/live/app`
+    - SRT (Listener): `srt://0.0.0.0:9000` (auto-appends `?mode=listener`)
+    - SRT (Caller/Pull): `srt://192.168.1.100:9000` (auto-appends `?mode=caller`)
+    - UDP (Listener): `udp://0.0.0.0:1234` (auto-appends `?listen`)
+    - UDP (Multicast Pull): `udp://239.1.1.1:1234`
+    - HTTP/HLS: `http://example.com/stream.m3u8`
   - `"temp_dir"`: Path for localized chunking assets.
 - `"streams"` (Server): Array of static registered path definitions.
   - `"path"`: Expected URL route identifier.
