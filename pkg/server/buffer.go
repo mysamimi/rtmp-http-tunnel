@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,16 +15,18 @@ import (
 
 type Buffer struct {
 	cfg        *common.ServerConfig
+	tempDir    string
 	mu         sync.Mutex
 	chunks     map[int64]string // maps sequence number to local file path
 	nextSeq    int64
 	hasStarted bool
 }
 
-func NewBuffer(cfg *common.ServerConfig) *Buffer {
+func NewBuffer(cfg *common.ServerConfig, tempDir string) *Buffer {
 	return &Buffer{
-		cfg:    cfg,
-		chunks: make(map[int64]string),
+		cfg:     cfg,
+		tempDir: tempDir,
+		chunks:  make(map[int64]string),
 	}
 }
 
@@ -29,6 +34,13 @@ func NewBuffer(cfg *common.ServerConfig) *Buffer {
 func (b *Buffer) Add(seqNum int64, filePath string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	// Discard late-arriving chunks to prevent disk/memory leaks
+	if b.hasStarted && seqNum < b.nextSeq {
+		log.Printf("[Buffer] Discarding late chunk Seq %d (already passed nextSeq %d)", seqNum, b.nextSeq)
+		_ = os.Remove(filePath)
+		return
+	}
 
 	b.chunks[seqNum] = filePath
 	log.Printf("[Buffer] Added chunk %d (Total buffered chunks: %d)", seqNum, len(b.chunks))
@@ -64,7 +76,8 @@ func (b *Buffer) Pop(ctx context.Context) (string, int64, error) {
 		select {
 		case <-ctx.Done():
 			return "", 0, ctx.Err()
-		case <-time.After(200 * time.Millisecond):
+		default:
+			time.Sleep(200 * time.Millisecond)
 		}
 		b.mu.Lock()
 	}
@@ -75,7 +88,9 @@ func (b *Buffer) Pop(ctx context.Context) (string, int64, error) {
 	if waitTimeout < 4*time.Second {
 		waitTimeout = 8 * time.Second
 	}
-	timeoutChan := time.After(waitTimeout)
+	
+	timer := time.NewTimer(waitTimeout)
+	defer timer.Stop()
 
 	for {
 		filePath, exists := b.chunks[b.nextSeq]
@@ -91,7 +106,7 @@ func (b *Buffer) Pop(ctx context.Context) (string, int64, error) {
 		select {
 		case <-ctx.Done():
 			return "", 0, ctx.Err()
-		case <-timeoutChan:
+		case <-timer.C:
 			b.mu.Lock()
 			log.Printf("[Buffer] WARNING: Timeout waiting for chunk Seq %d. Skipping to keep stream alive...", b.nextSeq)
 			skippedSeq := b.nextSeq
@@ -105,18 +120,42 @@ func (b *Buffer) Pop(ctx context.Context) (string, int64, error) {
 			
 			b.mu.Unlock()
 			return "", skippedSeq, fmt.Errorf("timeout waiting for sequence %d", skippedSeq)
-		case <-time.After(100 * time.Millisecond):
-			// Poll again
+		default:
+			time.Sleep(100 * time.Millisecond)
 		}
 		b.mu.Lock()
 	}
 }
 
-// Reset clears the buffer
+// Reset clears the buffer and cleans up untransmitted files on disk
 func (b *Buffer) Reset() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	// Clean up any files tracked in the map
+	for _, path := range b.chunks {
+		_ = os.Remove(path)
+	}
+
 	b.chunks = make(map[int64]string)
 	b.hasStarted = false
-	log.Println("[Buffer] Buffer has been reset")
+	b.nextSeq = 0
+
+	// Also clean up any loose .ts files in tempDir
+	if b.tempDir != "" {
+		files, err := os.ReadDir(b.tempDir)
+		if err == nil {
+			for _, f := range files {
+				if strings.HasSuffix(f.Name(), ".ts") {
+					_ = os.Remove(filepath.Join(b.tempDir, f.Name()))
+				}
+			}
+		}
+	}
+	log.Println("[Buffer] Buffer has been reset and temp files cleared")
+}
+
+// Cleanup releases all resources associated with the buffer
+func (b *Buffer) Cleanup() {
+	b.Reset()
 }

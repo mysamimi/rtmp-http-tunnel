@@ -3,6 +3,10 @@ package client
 import (
 	"context"
 	"log"
+	"os"
+	"path/filepath"
+	"sync"
+
 	"rtmp-http-tunnel/pkg/common"
 )
 
@@ -16,27 +20,56 @@ func NewClient(cfg *common.ClientConfig) *Client {
 	}
 }
 
-// Start starts the entire client pipeline (Ingester + Uploader)
+// Start starts the entire client pipeline (orchestrates one goroutine per stream)
 func (c *Client) Start(ctx context.Context) error {
-	// Create a channel for passing chunk jobs from Ingester to Uploader
-	// Buffered to hold up to 100 chunks in queue if network goes slow
+	var wg sync.WaitGroup
+	for _, stream := range c.cfg.Streams {
+		wg.Add(1)
+		go func(sc common.StreamConfig) {
+			defer wg.Done()
+			runStream(ctx, c.cfg, sc)
+		}(stream)
+	}
+	wg.Wait()
+	return nil
+}
+
+func runStream(ctx context.Context, cfg *common.ClientConfig, sc common.StreamConfig) {
+	log.Printf("[Client] Starting stream pipeline for path: %s (RTMP: %s, Temp: %s)", sc.StreamPath, sc.LocalRTMPAddr, sc.TempDir)
+
+	// Ensure local temp dir exists
+	if err := os.MkdirAll(sc.TempDir, 0755); err != nil {
+		log.Printf("[Client] [Stream %s] Failed to create temp dir %s: %v", sc.StreamPath, sc.TempDir, err)
+		return
+	}
+
+	// Clean up any files in temp dir from previous runs
+	files, err := os.ReadDir(sc.TempDir)
+	if err == nil {
+		for _, f := range files {
+			_ = os.Remove(filepath.Join(sc.TempDir, f.Name()))
+		}
+	}
+
+	// Channel for passing chunk jobs from Ingester to Uploader for this specific stream
 	chunkChan := make(chan ChunkJob, 100)
 
-	ingester := NewIngester(c.cfg, chunkChan)
-	uploader := NewUploader(c.cfg, chunkChan)
+	ingester := NewIngester(cfg, sc, chunkChan)
+	uploader := NewUploader(cfg, sc, chunkChan)
 
 	// Run uploader in a separate goroutine
+	uploaderCtx, uploaderCancel := context.WithCancel(ctx)
+	defer uploaderCancel()
+
 	go func() {
-		uploader.Start(ctx)
+		uploader.Start(uploaderCtx)
 	}()
 
-	log.Println("[Client] Client orchestrator started successfully")
-	
 	// Start ingester (blocks until context is cancelled or fatal error occurs)
-	err := ingester.Start(ctx)
-	
+	if err := ingester.Start(ctx); err != nil && err != context.Canceled {
+		log.Printf("[Client] [Stream %s] Ingester exited with error: %v", sc.StreamPath, err)
+	}
+
 	// Close chunk channel so uploader workers exit
 	close(chunkChan)
-	
-	return err
 }

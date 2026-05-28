@@ -26,22 +26,34 @@ func main() {
 		cfg = &common.Config{
 			Mode: "client",
 			Client: common.ClientConfig{
-				LocalRTMPAddr:  "127.0.0.1:1935",
-				ServerURL:      "http://127.0.0.1:8080",
-				AuthToken:      "default-secret-token",
-				Concurrency:    4,
-				ChunkDuration:  2,
-				ObfuscationKey: "my-xor-key",
-				TempDir:        "./tmp_client",
+				ServerURL:        "http://127.0.0.1:8080",
+				AuthToken:        "default-secret-token",
+				Concurrency:      4,
+				ChunkDuration:    2,
+				ObfuscationKey:   "my-xor-key",
+				MaxUploadRetries: 5,
+				Streams: []common.StreamConfig{
+					{
+						StreamPath:    "default_stream",
+						LocalRTMPAddr: "127.0.0.1:1935",
+						TempDir:       "./tmp_client/default_stream",
+					},
+				},
 			},
 			Server: common.ServerConfig{
-				ListenAddr:     ":8080",
-				AuthToken:      "default-secret-token",
-				ObfuscationKey: "my-xor-key",
-				BufferDuration: 10, // Default to short buffer for local testing, e.g. 10s
-				ChunkDuration:  2,
-				TargetRTMPURL:  "rtmp://127.0.0.1:1936/live/output", // local test server target
-				TempDir:        "./tmp_server",
+				ListenAddr:             ":8080",
+				AuthToken:              "default-secret-token",
+				ObfuscationKey:         "my-xor-key",
+				BufferDuration:         10,
+				ChunkDuration:          2,
+				InactiveSessionTimeout: 120,
+				Streams: []common.ServerStreamConfig{
+					{
+						Path:          "default_stream",
+						TargetRTMPURL: "rtmp://127.0.0.1:1936/live/output",
+						TempDir:       "./tmp_server/default_stream",
+					},
+				},
 			},
 		}
 	}

@@ -1,15 +1,21 @@
 {
   "mode": "client",
   "client": {
-    "local_rtmp_addr": "127.0.0.1:1935",
     "server_url": "https://your-server-ip:8443",
     "auth_token": "a-strong-random-shared-secret-token",
+    "obfuscation_key": "some-secret-xor-obfuscation-key",
     "concurrency": 4,
     "chunk_duration": 2,
-    "obfuscation_key": "some-secret-xor-obfuscation-key",
-    "temp_dir": "./tmp_client",
     "use_docker": true,
-    "docker_image": "linuxserver/ffmpeg"
+    "docker_image": "linuxserver/ffmpeg",
+    "max_upload_retries": 5,
+    "streams": [
+      {
+        "stream_path": "stream_abc123",
+        "local_rtmp_addr": "127.0.0.1:1935",
+        "temp_dir": "./tmp_client/stream_abc123"
+      }
+    ]
   },
   "server": {
     "listen_addr": ":8443",
@@ -17,11 +23,17 @@
     "obfuscation_key": "some-secret-xor-obfuscation-key",
     "buffer_duration": 60,
     "chunk_duration": 2,
-    "target_rtmp_url": "rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx-xxxx",
-    "temp_dir": "./tmp_server",
+    "inactive_session_timeout": 120,
     "tls_cert_file": "/etc/letsencrypt/live/your-server-ip/fullchain.pem",
     "tls_key_file": "/etc/letsencrypt/live/your-server-ip/privkey.pem",
     "use_docker": true,
-    "docker_image": "linuxserver/ffmpeg"
+    "docker_image": "linuxserver/ffmpeg",
+    "streams": [
+      {
+        "path": "stream_abc123",
+        "target_rtmp_url": "rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx-xxxx",
+        "temp_dir": "./tmp_server/stream_abc123"
+      }
+    ]
   }
 }

@@ -22,6 +22,9 @@ The remote server buffers these segments (e.g., for 60 seconds) to absorb packet
 ---
 
 ## Features
+- **Multi-Stream Support (Multi-Client & Multi-Server):** Relay multiple independent streams simultaneously over the same server port by routing them to dynamic path endpoints (e.g. `/s/stream_abc/upload`).
+- **Smart Expiry Policy:** The client queries the server's `/health` endpoint to discover buffer duration configurations dynamically. It discards obsolete chunks local-side (and avoids uploading them) if they exceed the server's window to conserve bandwidth.
+- **Background Inactive Session Cleanup:** The server runs a background routine to safely terminate inactive stream session processes, releasing ports, docker containers, and cleaning up temporary disk assets.
 - **Dockerized FFmpeg Integration:** Run video processing inside lightweight containers. No need to install and configure local FFmpeg builds on either the client or the server if Docker is available.
 - **Concurrent Chunk Uploads:** Leverages a worker pool to upload segments in parallel, naturally utilizing multi-connection load balancers or software network bonding.
 - **DPI-proof XOR Obfuscation:** Scrambles chunk bytes with a simple key on the application layer to bypass Deep Packet Inspection (DPI) that targets video headers.
@@ -46,15 +49,26 @@ Copy `config.json.example` to `config.json` and adjust parameters:
 {
   "mode": "client",
   "client": {
-    "local_rtmp_addr": "127.0.0.1:1935",
     "server_url": "https://your-server-ip:8443",
     "auth_token": "a-strong-random-shared-secret-token",
+    "obfuscation_key": "some-secret-xor-obfuscation-key",
     "concurrency": 4,
     "chunk_duration": 2,
-    "obfuscation_key": "some-secret-xor-obfuscation-key",
-    "temp_dir": "./tmp_client",
     "use_docker": true,
-    "docker_image": "linuxserver/ffmpeg"
+    "docker_image": "linuxserver/ffmpeg",
+    "max_upload_retries": 5,
+    "streams": [
+      {
+        "stream_path": "stream_abc123",
+        "local_rtmp_addr": "127.0.0.1:1935",
+        "temp_dir": "./tmp_client/stream_abc123"
+      },
+      {
+        "stream_path": "stream_xyz456",
+        "local_rtmp_addr": "127.0.0.1:1936",
+        "temp_dir": "./tmp_client/stream_xyz456"
+      }
+    ]
   },
   "server": {
     "listen_addr": ":8443",
@@ -62,20 +76,39 @@ Copy `config.json.example` to `config.json` and adjust parameters:
     "obfuscation_key": "some-secret-xor-obfuscation-key",
     "buffer_duration": 60,
     "chunk_duration": 2,
-    "target_rtmp_url": "rtmp://a.rtmp.youtube.com/live2/xxxx-xxxx-xxxx-xxxx-xxxx",
-    "temp_dir": "./tmp_server",
+    "inactive_session_timeout": 120,
     "tls_cert_file": "/etc/letsencrypt/live/your-server-ip/fullchain.pem",
     "tls_key_file": "/etc/letsencrypt/live/your-server-ip/privkey.pem",
     "use_docker": true,
-    "docker_image": "linuxserver/ffmpeg"
+    "docker_image": "linuxserver/ffmpeg",
+    "streams": [
+      {
+        "path": "stream_abc123",
+        "target_rtmp_url": "rtmp://a.rtmp.youtube.com/live2/key-for-stream-1",
+        "temp_dir": "./tmp_server/stream_abc123"
+      },
+      {
+        "path": "stream_xyz456",
+        "target_rtmp_url": "rtmp://a.rtmp.youtube.com/live2/key-for-stream-2",
+        "temp_dir": "./tmp_server/stream_xyz456"
+      }
+    ]
   }
 }
 ```
 
 ### Key Parameters:
-- `"use_docker"`: Set to `true` to use Dockerized FFmpeg, or `false` to use local host FFmpeg.
-- `"obfuscation_key"`: A shared key used to XOR-encrypt chunk data. Must be **identical** on both the client and server.
-- `"auth_token"`: The authorization bearer token used by the server to validate requests.
+- `"concurrency"`: Number of concurrent HTTP uploader workers per client stream.
+- `"max_upload_retries"`: Number of times client attempts uploading a chunk before skipping/discarding.
+- `"inactive_session_timeout"`: Server-side inactivity timeout (seconds). If no chunk uploads are received for a stream within this duration, the server terminates its streamer process and cleans up.
+- `"streams"` (Client): Array of local streaming pipelines, defining:
+  - `"stream_path"`: Server route identifier (`/s/{stream_path}/upload`).
+  - `"local_rtmp_addr"`: Local port OBS/Encoder will connect to.
+  - `"temp_dir"`: Path for localized chunking assets.
+- `"streams"` (Server): Array of static registered path definitions.
+  - `"path"`: Expected URL route identifier.
+  - `"target_rtmp_url"`: Outbound RTMP ingest server (e.g. YouTube RTMP URL + Key).
+  - `"temp_dir"`: Path for localized server buffered chunks.
 
 ---
 
@@ -94,11 +127,16 @@ go run main.go -mode client -config config.json
 ```
 
 ### 3. Start Streaming
-Configure your encoder (e.g., OBS) to stream to:
+Configure your encoder(s) (e.g., OBS) to stream to their respective ports.
+For example, for the first stream:
 - **Server:** `rtmp://127.0.0.1:1935/live/app`
 - **Stream Key:** (can be left blank or filled with any dummy key)
 
-Once OBS starts streaming, the client will segment the video, obfuscate the chunks, and upload them. The server will buffer them and push the reconstructed stream to the configured `target_rtmp_url` (YouTube).
+For the second stream:
+- **Server:** `rtmp://127.0.0.1:1936/live/app`
+- **Stream Key:** (can be left blank or filled with any dummy key)
+
+Once OBS starts streaming, the client segments, obfuscates, and relays the chunks to `/s/{stream_path}/upload`. The server buffers them in isolations and forwards the reconstructed stream to the matching `target_rtmp_url`.
 
 ---
 
@@ -107,7 +145,7 @@ Once OBS starts streaming, the client will segment the video, obfuscate the chun
 ### Decryption Warning
 If the server logs:
 `[Receiver] WARNING: Decrypted chunk does not start with MPEG-TS sync byte (0x47, 'G')...`
-It means the server was unable to decrypt the incoming chunk. Double-check that `"obfuscation_key"` is identical in both the client and server configuration, and that the server successfully loaded its `config.json` file.
+It means the server was unable to decrypt the incoming chunk. Double-check that `"obfuscation_key"` is identical in both the client and server configuration.
 
 ### Port Conflicts
 If you receive a `port is already allocated` or `bind: address already in use` error:
@@ -117,5 +155,5 @@ If you receive a `port is already allocated` or `bind: address already in use` e
   ```
 - On the client (Docker): Clean up any orphaned containers that are still holding the port:
   ```bash
-  docker rm -f $(docker ps -a -q --filter ancestor=linuxserver/ffmpeg)
+  docker rm -f $(docker ps -a -q --filter name=rtmp-http-tunnel-client-)
   ```

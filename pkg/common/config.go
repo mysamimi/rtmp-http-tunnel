@@ -5,34 +5,46 @@ import (
 	"os"
 )
 
+type StreamConfig struct {
+	StreamPath    string `json:"stream_path"`
+	LocalRTMPAddr string `json:"local_rtmp_addr"`
+	TempDir       string `json:"temp_dir"`
+}
+
 type ClientConfig struct {
-	LocalRTMPAddr  string `json:"local_rtmp_addr"`  // e.g., "127.0.0.1:1935"
-	ServerURL      string `json:"server_url"`       // e.g., "https://server:8443"
-	AuthToken      string `json:"auth_token"`       // Shared secret for header authentication
-	Concurrency    int    `json:"concurrency"`      // Number of concurrent uploaders
-	ChunkDuration  int    `json:"chunk_duration"`   // Target duration for each TS chunk in seconds
-	ObfuscationKey string `json:"obfuscation_key"`  // Key for XOR encrypting chunk data
-	TempDir        string `json:"temp_dir"`         // Temp dir to store generated TS files
-	UseDocker      bool   `json:"use_docker"`       // Whether to run FFmpeg inside Docker container
-	DockerImage    string `json:"docker_image"`     // Docker image name, e.g. "linuxserver/ffmpeg"
+	ServerURL        string         `json:"server_url"`
+	AuthToken        string         `json:"auth_token"`
+	ObfuscationKey   string         `json:"obfuscation_key"`
+	Concurrency      int            `json:"concurrency"`
+	ChunkDuration    int            `json:"chunk_duration"`
+	UseDocker        bool           `json:"use_docker"`
+	DockerImage      string         `json:"docker_image"`
+	MaxUploadRetries int            `json:"max_upload_retries"`
+	Streams          []StreamConfig `json:"streams"`
+}
+
+type ServerStreamConfig struct {
+	Path          string `json:"path"`
+	TargetRTMPURL string `json:"target_rtmp_url"`
+	TempDir       string `json:"temp_dir"`
 }
 
 type ServerConfig struct {
-	ListenAddr     string `json:"listen_addr"`      // e.g., ":8443"
-	AuthToken      string `json:"auth_token"`       // Must match client's AuthToken
-	ObfuscationKey string `json:"obfuscation_key"`  // Key for XOR decrypting chunk data
-	BufferDuration int    `json:"buffer_duration"`  // Buffer size in seconds (e.g., 60)
-	ChunkDuration  int    `json:"chunk_duration"`   // Expected duration of each chunk (e.g., 2)
-	TargetRTMPURL  string `json:"target_rtmp_url"`  // YouTube/Aparat RTMP URL + Stream Key
-	TempDir        string `json:"temp_dir"`         // Temp dir to store received TS files
-	TLSCertFile    string `json:"tls_cert_file"`    // Optional: path to SSL cert file for HTTPS
-	TLSKeyFile     string `json:"tls_key_file"`     // Optional: path to SSL key file for HTTPS
-	UseDocker      bool   `json:"use_docker"`       // Whether to run FFmpeg inside Docker container
-	DockerImage    string `json:"docker_image"`     // Docker image name, e.g. "linuxserver/ffmpeg"
+	ListenAddr             string               `json:"listen_addr"`
+	AuthToken              string               `json:"auth_token"`
+	ObfuscationKey         string               `json:"obfuscation_key"`
+	BufferDuration         int                  `json:"buffer_duration"`
+	ChunkDuration          int                  `json:"chunk_duration"`
+	InactiveSessionTimeout int                  `json:"inactive_session_timeout"` // seconds
+	TLSCertFile            string               `json:"tls_cert_file"`
+	TLSKeyFile             string               `json:"tls_key_file"`
+	UseDocker              bool                 `json:"use_docker"`
+	DockerImage            string               `json:"docker_image"`
+	Streams                []ServerStreamConfig `json:"streams"`
 }
 
 type Config struct {
-	Mode   string       `json:"mode"`   // "client" or "server"
+	Mode   string       `json:"mode"` // "client" or "server"
 	Client ClientConfig `json:"client"`
 	Server ServerConfig `json:"server"`
 }

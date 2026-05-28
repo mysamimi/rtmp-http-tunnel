@@ -13,14 +13,16 @@ import (
 )
 
 type Streamer struct {
-	cfg    *common.ServerConfig
-	buffer *Buffer
+	cfg           *common.ServerConfig
+	targetRTMPURL string
+	buffer        *Buffer
 }
 
-func NewStreamer(cfg *common.ServerConfig, buffer *Buffer) *Streamer {
+func NewStreamer(cfg *common.ServerConfig, targetRTMPURL string, buffer *Buffer) *Streamer {
 	return &Streamer{
-		cfg:    cfg,
-		buffer: buffer,
+		cfg:           cfg,
+		targetRTMPURL: targetRTMPURL,
+		buffer:        buffer,
 	}
 }
 
@@ -33,7 +35,7 @@ func (s *Streamer) Start(ctx context.Context) error {
 		default:
 		}
 
-		log.Printf("[Streamer] Starting FFmpeg restreamer output to: %s", s.cfg.TargetRTMPURL)
+		log.Printf("[Streamer] Starting FFmpeg restreamer output to: %s", s.targetRTMPURL)
 
 		// Start FFmpeg to read from stdin (-) and output to RTMP.
 		var cmd *exec.Cmd
@@ -51,7 +53,7 @@ func (s *Streamer) Start(ctx context.Context) error {
 				"-i", "-",
 				"-c", "copy",
 				"-f", "flv",
-				s.cfg.TargetRTMPURL,
+				s.targetRTMPURL,
 			)
 			log.Printf("[Streamer] Running FFmpeg in Docker (%s)...", image)
 		} else {
@@ -63,7 +65,7 @@ func (s *Streamer) Start(ctx context.Context) error {
 				"-i", "-",
 				"-c", "copy",
 				"-f", "flv",
-				s.cfg.TargetRTMPURL,
+				s.targetRTMPURL,
 			)
 			log.Println("[Streamer] Running native FFmpeg...")
 		}
@@ -100,7 +102,12 @@ func (s *Streamer) Start(ctx context.Context) error {
 
 		log.Printf("[Streamer] FFmpeg output process exited: %v. Resetting buffer and restarting streamer...", streamErr)
 		s.buffer.Reset() // Clear queue so we start clean next time
-		time.Sleep(2 * time.Second)
+		
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
 	}
 }
 
