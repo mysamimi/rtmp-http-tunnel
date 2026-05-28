@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"rtmp-http-tunnel/pkg/common"
@@ -80,6 +81,9 @@ func (in *Ingester) Start(ctx context.Context) error {
 			_ = exec.Command("docker", "rm", "-f", containerName).Run()
 		}
 	}()
+
+	var wg sync.WaitGroup
+	defer wg.Wait()
 
 	for {
 		select {
@@ -174,7 +178,11 @@ func (in *Ingester) Start(ctx context.Context) error {
 
 		// Start monitoring the index.m3u8 playlist file while FFmpeg runs
 		monitorCtx, monitorCancel := context.WithCancel(ctx)
-		go in.monitorPlaylist(monitorCtx, playlistPath, seqRegexp)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			in.monitorPlaylist(monitorCtx, playlistPath, seqRegexp)
+		}()
 
 		// Wait for FFmpeg to exit (meaning OBS stopped streaming or client disconnected)
 		err = cmd.Wait()
@@ -232,10 +240,14 @@ func (in *Ingester) monitorPlaylist(ctx context.Context, playlistPath string, se
 					time.Sleep(50 * time.Millisecond)
 					
 					log.Printf("[Ingester] Detected new chunk: %s (Seq: %d)", line, seq)
-					in.chunkChan <- ChunkJob{
+					select {
+					case <-ctx.Done():
+						return
+					case in.chunkChan <- ChunkJob{
 						Path:     filePath,
 						SeqNum:   seq,
 						Filename: line,
+					}:
 					}
 					lastQueuedSeq = seq
 				}
