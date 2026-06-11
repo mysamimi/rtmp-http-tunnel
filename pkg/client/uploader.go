@@ -30,7 +30,7 @@ func NewUploader(cfg *common.ClientConfig, stream common.StreamConfig, chunkChan
 	tr := &http.Transport{
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}
-	
+
 	return &Uploader{
 		cfg:       cfg,
 		stream:    stream,
@@ -44,7 +44,7 @@ func NewUploader(cfg *common.ClientConfig, stream common.StreamConfig, chunkChan
 
 func (u *Uploader) discoverBufferConfig(ctx context.Context) {
 	url := fmt.Sprintf("%s/s/%s/health", u.cfg.ServerURL, u.stream.StreamPath)
-	
+
 	// Fallback defaults
 	defaultBufferDuration := 60
 	defaultChunkDuration := 2
@@ -88,9 +88,14 @@ func (u *Uploader) discoverBufferConfig(ctx context.Context) {
 	if chunkDur <= 0 {
 		chunkDur = defaultChunkDuration
 	}
-	
+	if bufferDur <= chunkDur {
+		log.Printf("[Uploader %s] Invalid server buffer settings (buffer_duration=%ds, chunk_duration=%ds). Using fallback max age %v.",
+			u.stream.StreamPath, bufferDur, chunkDur, u.maxChunkAge)
+		return
+	}
+
 	u.maxChunkAge = time.Duration(bufferDur-chunkDur) * time.Second
-	log.Printf("[Uploader %s] Successfully discovered buffer configuration from server: buffer_duration=%ds, chunk_duration=%ds. Calculated maxChunkAge: %v", 
+	log.Printf("[Uploader %s] Successfully discovered buffer configuration from server: buffer_duration=%ds, chunk_duration=%ds. Calculated maxChunkAge: %v",
 		u.stream.StreamPath, bufferDur, chunkDur, u.maxChunkAge)
 }
 
@@ -100,7 +105,7 @@ func (u *Uploader) Start(ctx context.Context) {
 	u.discoverBufferConfig(ctx)
 
 	var wg sync.WaitGroup
-	
+
 	concurrency := u.cfg.Concurrency
 	if concurrency <= 0 {
 		concurrency = 4
@@ -130,13 +135,13 @@ func (u *Uploader) worker(ctx context.Context, workerID int) {
 			if !ok {
 				return
 			}
-			
+
 			if ctx.Err() != nil {
 				return
 			}
 
 			log.Printf("[Uploader-Worker-%d-%s] Uploading chunk %s (Seq: %d)...", workerID, u.stream.StreamPath, job.Filename, job.SeqNum)
-			
+
 			maxRetries := u.cfg.MaxUploadRetries
 			if maxRetries <= 0 {
 				maxRetries = 5
@@ -168,7 +173,7 @@ func (u *Uploader) uploadWithRetry(ctx context.Context, job ChunkJob, maxRetries
 		// Smart Expiry Check
 		age := time.Since(job.CreatedAt)
 		if age > u.maxChunkAge {
-			log.Printf("[Uploader %s] Chunk Seq %d EXPIRED (age: %.1fs > max: %.1fs). Skipping upload.", 
+			log.Printf("[Uploader %s] Chunk Seq %d EXPIRED (age: %.1fs > max: %.1fs). Skipping upload.",
 				u.stream.StreamPath, job.SeqNum, age.Seconds(), u.maxChunkAge.Seconds())
 			return nil // Return nil so it's not logged as a failed chunk error to clean up the file
 		}
@@ -179,9 +184,9 @@ func (u *Uploader) uploadWithRetry(ctx context.Context, job ChunkJob, maxRetries
 		}
 
 		lastErr = err
-		log.Printf("[Uploader %s] Upload attempt %d failed for %s: %v. Retrying in %v...", 
+		log.Printf("[Uploader %s] Upload attempt %d failed for %s: %v. Retrying in %v...",
 			u.stream.StreamPath, attempt, job.Filename, err, backoff)
-		
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

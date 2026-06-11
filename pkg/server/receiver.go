@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,6 +15,8 @@ import (
 
 	"rtmp-http-tunnel/pkg/common"
 )
+
+const maxUploadBodySize = 50 * 1024 * 1024
 
 type Receiver struct {
 	cfg    *common.ServerConfig
@@ -120,7 +123,7 @@ func (r *Receiver) handleStreamRequest(w http.ResponseWriter, req *http.Request)
 func (r *Receiver) handleHealth(w http.ResponseWriter, req *http.Request, session *StreamSession) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	resp := fmt.Sprintf(`{"status":"ok","buffer_duration":%d,"chunk_duration":%d}`, 
+	resp := fmt.Sprintf(`{"status":"ok","buffer_duration":%d,"chunk_duration":%d}`,
 		r.cfg.BufferDuration, r.cfg.ChunkDuration)
 	_, _ = w.Write([]byte(resp))
 }
@@ -148,9 +151,14 @@ func (r *Receiver) handleUpload(w http.ResponseWriter, req *http.Request, sessio
 		return
 	}
 
-	// 2. Read Body (Limit reader size to 50MB to prevent OOM)
-	bodyBytes, err := io.ReadAll(io.LimitReader(req.Body, 50*1024*1024))
+	// 2. Read Body (hard limit to prevent OOM and truncated/corrupt chunks)
+	bodyBytes, err := io.ReadAll(http.MaxBytesReader(w, req.Body, maxUploadBodySize))
 	if err != nil {
+		if isRequestTooLarge(err) {
+			log.Printf("[Receiver] Rejected oversized chunk for %s: %v", session.Path, err)
+			http.Error(w, "Chunk too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		log.Printf("[Receiver] Failed to read request body for %s: %v", session.Path, err)
 		http.Error(w, "Failed to read body", http.StatusInternalServerError)
 		return
@@ -189,4 +197,12 @@ func (r *Receiver) handleUpload(w http.ResponseWriter, req *http.Request, sessio
 
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("Chunk received"))
+}
+
+func isRequestTooLarge(err error) bool {
+	if err == nil {
+		return false
+	}
+	var maxBytesErr *http.MaxBytesError
+	return errors.As(err, &maxBytesErr)
 }

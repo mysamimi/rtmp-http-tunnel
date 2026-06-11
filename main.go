@@ -22,46 +22,16 @@ func main() {
 	// 2. Load Configuration
 	cfg, err := common.LoadConfig(*configPath)
 	if err != nil {
-		log.Printf("Warning: Failed to load config file (%s): %v. Initializing default values...", *configPath, err)
-		cfg = &common.Config{
-			Mode: "client",
-			Client: common.ClientConfig{
-				ServerURL:        "http://127.0.0.1:8080",
-				AuthToken:        "default-secret-token",
-				Concurrency:      4,
-				ChunkDuration:    2,
-				ObfuscationKey:   "my-xor-key",
-				MaxUploadRetries: 5,
-				Streams: []common.StreamConfig{
-					{
-						StreamPath: "default_stream",
-						InputURL:   "rtmp://0.0.0.0:1935",
-						TempDir:    "./tmp_client/default_stream",
-					},
-				},
-			},
-			Server: common.ServerConfig{
-				ListenAddr:             ":8080",
-				AuthToken:              "default-secret-token",
-				ObfuscationKey:         "my-xor-key",
-				BufferDuration:         10,
-				ChunkDuration:          2,
-				InactiveSessionTimeout: 120,
-				Streams: []common.ServerStreamConfig{
-					{
-						Path:          "default_stream",
-						TargetRTMPURL: "rtmp://127.0.0.1:1936/live/output",
-						TempDir:       "./tmp_server/default_stream",
-					},
-				},
-			},
-		}
+		log.Fatalf("[Main] Failed to load config file (%s): %v", *configPath, err)
 	}
 
 	// Apply mode override if provided via CLI flag
 	mode := cfg.Mode
 	if *modeOverride != "" {
 		mode = *modeOverride
+	}
+	if err := cfg.Validate(mode); err != nil {
+		log.Fatalf("[Main] Invalid configuration: %v", err)
 	}
 
 	log.Printf("[Main] Running in '%s' mode...", mode)

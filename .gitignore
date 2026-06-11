@@ -9,6 +9,7 @@ rtmp-http-tunnel
 # Test binaries
 *.test
 *.out
+.gocache/
 
 # Temporary stream directories
 /tmp_client/
@@ -37,3 +38,4 @@ Thumbs.db
 
 # local files
 config.json
+.gocache

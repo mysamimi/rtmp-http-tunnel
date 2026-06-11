@@ -101,6 +101,9 @@ Copy `config.json.example` to `config.json` and adjust parameters:
 - `"concurrency"`: Number of concurrent HTTP uploader workers per client stream.
 - `"max_upload_retries"`: Number of times client attempts uploading a chunk before skipping/discarding.
 - `"inactive_session_timeout"`: Server-side inactivity timeout (seconds). If no chunk uploads are received for a stream within this duration, the server terminates its streamer process and cleans up.
+- `"auth_token"`: Required shared bearer token. The client and server values must match.
+- `"obfuscation_key"`: Required shared XOR key. The client and server values must match.
+- `"buffer_duration"` and `"chunk_duration"`: On the server, `buffer_duration` must be greater than `chunk_duration`; otherwise the server refuses to start.
 - `"streams"` (Client): Array of local streaming pipelines, defining:
   - `"stream_path"`: Server route identifier (`/s/{stream_path}/upload`).
   - `"input_url"`: Universal input URL. Supported formats:
@@ -116,6 +119,18 @@ Copy `config.json.example` to `config.json` and adjust parameters:
   - `"path"`: Expected URL route identifier.
   - `"target_rtmp_url"`: Outbound RTMP ingest server (e.g. YouTube RTMP URL + Key).
   - `"temp_dir"`: Path for localized server buffered chunks.
+
+### Startup Validation
+
+The application requires a valid configuration file. If `config.json` is missing or invalid, startup fails instead of falling back to unsafe defaults.
+
+Validation checks include:
+- `mode` must be `client` or `server` (or overridden with `-mode`).
+- Client `server_url` must be `http` or `https`.
+- `auth_token`, `obfuscation_key`, stream paths, input URLs, target URLs, and temp directories must be present.
+- Stream paths may contain only letters, numbers, `.`, `_`, and `-`; slashes are not allowed because paths are used in `/s/{stream_path}/...` routes.
+- Stream paths must be unique within the selected client or server configuration.
+- TLS certificate and key paths must be configured together.
 
 ---
 
@@ -147,7 +162,18 @@ Once OBS starts streaming, the client segments, obfuscates, and relays the chunk
 
 ---
 
+## Safety Limits
+
+- Upload requests are capped at 50 MB per chunk. Oversized chunks are rejected with HTTP `413` so corrupted/truncated media is not accepted silently.
+- The client discards chunks that are too old for the server buffer window. If the server health endpoint is unreachable, the client uses a conservative fallback window.
+- HTTPS is recommended for real deployments. The client currently accepts self-signed TLS certificates to simplify VPS setups, so keep `auth_token` strong and private.
+
+---
+
 ## Troubleshooting
+
+### Missing or Invalid Config
+If startup fails with `Invalid configuration`, fix the field named in the log. The application does not run with placeholder defaults.
 
 ### Decryption Warning
 If the server logs:
