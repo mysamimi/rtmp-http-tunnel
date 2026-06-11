@@ -8,9 +8,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"rtmp-http-tunnel/pkg/client"
-	"rtmp-http-tunnel/pkg/common"
-	"rtmp-http-tunnel/pkg/server"
+	"github.com/mysamimi/rtmp-http-tunnel/pkg/client"
+	"github.com/mysamimi/rtmp-http-tunnel/pkg/common"
+	"github.com/mysamimi/rtmp-http-tunnel/pkg/server"
 )
 
 func main() {

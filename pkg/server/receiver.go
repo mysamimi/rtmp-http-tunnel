@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"rtmp-http-tunnel/pkg/common"
+	"github.com/mysamimi/rtmp-http-tunnel/pkg/common"
 )
 
 const maxUploadBodySize = 50 * 1024 * 1024

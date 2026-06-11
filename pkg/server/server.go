@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"rtmp-http-tunnel/pkg/common"
+	"github.com/mysamimi/rtmp-http-tunnel/pkg/common"
 )
 
 type StreamSession struct {

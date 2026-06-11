@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"rtmp-http-tunnel/pkg/common"
+	"github.com/mysamimi/rtmp-http-tunnel/pkg/common"
 )
 
 type Buffer struct {
@@ -88,7 +88,7 @@ func (b *Buffer) Pop(ctx context.Context) (string, int64, error) {
 	if waitTimeout < 4*time.Second {
 		waitTimeout = 8 * time.Second
 	}
-	
+
 	timer := time.NewTimer(waitTimeout)
 	defer timer.Stop()
 
@@ -111,13 +111,13 @@ func (b *Buffer) Pop(ctx context.Context) (string, int64, error) {
 			log.Printf("[Buffer] WARNING: Timeout waiting for chunk Seq %d. Skipping to keep stream alive...", b.nextSeq)
 			skippedSeq := b.nextSeq
 			b.nextSeq++
-			
+
 			// If buffer is completely empty, resethasStarted to force re-buffering
 			if len(b.chunks) == 0 {
 				log.Println("[Buffer] Buffer completely drained. Pausing stream to re-buffer...")
 				b.hasStarted = false
 			}
-			
+
 			b.mu.Unlock()
 			return "", skippedSeq, fmt.Errorf("timeout waiting for sequence %d", skippedSeq)
 		default:

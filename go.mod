@@ -1,3 +1,3 @@
-module rtmp-http-tunnel
+module github.com/mysamimi/rtmp-http-tunnel
 
-go 1.26.2
+go 1.20

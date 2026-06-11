@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"rtmp-http-tunnel/pkg/common"
+	"github.com/mysamimi/rtmp-http-tunnel/pkg/common"
 )
 
 type Client struct {

@@ -9,7 +9,7 @@ import (
 	"os/exec"
 	"time"
 
-	"rtmp-http-tunnel/pkg/common"
+	"github.com/mysamimi/rtmp-http-tunnel/pkg/common"
 )
 
 type Streamer struct {
@@ -91,18 +91,18 @@ func (s *Streamer) Start(ctx context.Context) error {
 
 		// Feed chunks loop
 		streamErr := s.feedChunks(ctx, stdinPipe)
-		
+
 		// If feedChunks exits, we close the stdin pipe and wait for FFmpeg to finish
 		_ = stdinPipe.Close()
-		
+
 		// Kill the process if it's still running
 		_ = cmd.Process.Kill()
-		
+
 		_ = cmd.Wait()
 
 		log.Printf("[Streamer] FFmpeg output process exited: %v. Resetting buffer and restarting streamer...", streamErr)
 		s.buffer.Reset() // Clear queue so we start clean next time
-		
+
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -137,7 +137,7 @@ func (s *Streamer) feedChunks(ctx context.Context, writer io.WriteCloser) error 
 
 		// Write data to FFmpeg stdin
 		_, err = writer.Write(data)
-		
+
 		// Delete file as we have written it to FFmpeg pipe
 		_ = os.Remove(filePath)
 
