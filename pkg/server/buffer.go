@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -12,6 +13,8 @@ import (
 
 	"github.com/mysamimi/rtmp-http-tunnel/pkg/common"
 )
+
+var ErrBufferDrained = errors.New("buffer drained")
 
 type Buffer struct {
 	cfg        *common.ServerConfig
@@ -49,40 +52,13 @@ func (b *Buffer) Add(seqNum int64, filePath string) {
 // Pop retrieves the next chunk in sequence. It blocks if the next chunk is not yet ready,
 // or if the buffer is not yet filled to the required threshold.
 func (b *Buffer) Pop(ctx context.Context) (string, int64, error) {
+	if err := b.WaitUntilReady(ctx); err != nil {
+		return "", 0, err
+	}
+
 	b.mu.Lock()
 
-	// 1. Wait until buffer has enough chunks to start
-	requiredChunks := b.cfg.BufferDuration / b.cfg.ChunkDuration
-	if requiredChunks <= 0 {
-		requiredChunks = 15 // Default to 30s buffer if chunk duration is invalid
-	}
-
-	for !b.hasStarted {
-		if len(b.chunks) >= requiredChunks {
-			b.hasStarted = true
-			// Find the lowest sequence number currently in buffer to start with
-			var minSeq int64 = -1
-			for seq := range b.chunks {
-				if minSeq == -1 || seq < minSeq {
-					minSeq = seq
-				}
-			}
-			b.nextSeq = minSeq
-			log.Printf("[Buffer] Buffer filled (%d/%d chunks). Starting streaming from Seq %d", len(b.chunks), requiredChunks, b.nextSeq)
-			break
-		}
-
-		b.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return "", 0, ctx.Err()
-		default:
-			time.Sleep(200 * time.Millisecond)
-		}
-		b.mu.Lock()
-	}
-
-	// 2. Retrieve the next sequence chunk
+	// Retrieve the next sequence chunk.
 	// We wait up to 4 times the chunk duration before skipping to prevent permanent freeze
 	waitTimeout := time.Duration(b.cfg.ChunkDuration*4) * time.Second
 	if waitTimeout < 4*time.Second {
@@ -116,6 +92,8 @@ func (b *Buffer) Pop(ctx context.Context) (string, int64, error) {
 			if len(b.chunks) == 0 {
 				log.Println("[Buffer] Buffer completely drained. Pausing stream to re-buffer...")
 				b.hasStarted = false
+				b.mu.Unlock()
+				return "", skippedSeq, fmt.Errorf("%w while waiting for sequence %d", ErrBufferDrained, skippedSeq)
 			}
 
 			b.mu.Unlock()
@@ -125,6 +103,53 @@ func (b *Buffer) Pop(ctx context.Context) (string, int64, error) {
 		}
 		b.mu.Lock()
 	}
+}
+
+// WaitUntilReady blocks until enough chunks are buffered to start or restart FFmpeg.
+func (b *Buffer) WaitUntilReady(ctx context.Context) error {
+	requiredChunks := b.requiredChunks()
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		b.mu.Lock()
+		if b.hasStarted {
+			b.mu.Unlock()
+			return nil
+		}
+		if len(b.chunks) >= requiredChunks {
+			b.startLocked(requiredChunks)
+			b.mu.Unlock()
+			return nil
+		}
+		b.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (b *Buffer) requiredChunks() int {
+	requiredChunks := b.cfg.BufferDuration / b.cfg.ChunkDuration
+	if requiredChunks <= 0 {
+		return 15 // Default to 30s buffer if chunk duration is invalid
+	}
+	return requiredChunks
+}
+
+func (b *Buffer) startLocked(requiredChunks int) {
+	b.hasStarted = true
+	var minSeq int64 = -1
+	for seq := range b.chunks {
+		if minSeq == -1 || seq < minSeq {
+			minSeq = seq
+		}
+	}
+	b.nextSeq = minSeq
+	log.Printf("[Buffer] Buffer filled (%d/%d chunks). Starting streaming from Seq %d", len(b.chunks), requiredChunks, b.nextSeq)
 }
 
 // Reset clears the buffer and cleans up untransmitted files on disk

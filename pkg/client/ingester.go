@@ -18,9 +18,12 @@ import (
 )
 
 type Ingester struct {
-	cfg       *common.ClientConfig
-	stream    common.StreamConfig
-	chunkChan chan<- ChunkJob
+	cfg               *common.ClientConfig
+	stream            common.StreamConfig
+	chunkChan         chan<- ChunkJob
+	seqMu             sync.Mutex
+	nextUploadSeq     int64
+	sequenceStatePath string
 }
 
 type ChunkJob struct {
@@ -44,6 +47,8 @@ func (in *Ingester) Start(ctx context.Context) error {
 	if err := os.MkdirAll(in.stream.TempDir, 0755); err != nil {
 		return fmt.Errorf("failed to create temp dir: %w", err)
 	}
+	in.sequenceStatePath = filepath.Join(in.stream.TempDir, ".rtmp-http-tunnel-next-seq")
+	in.loadSequenceState()
 
 	// We clean up any old chunk files in the temp directory at startup
 	in.cleanupTempDir()
@@ -249,32 +254,76 @@ func (in *Ingester) monitorPlaylist(ctx context.Context, playlistPath string, se
 					continue
 				}
 
-				seq, err := strconv.ParseInt(matches[1], 10, 64)
+				hlsSeq, err := strconv.ParseInt(matches[1], 10, 64)
 				if err != nil {
 					continue
 				}
 
-				if seq > lastQueuedSeq {
+				if hlsSeq > lastQueuedSeq {
 					filePath := filepath.Join(in.stream.TempDir, line)
+					uploadSeq := in.nextSequence()
+					uploadFilename := fmt.Sprintf("chunk_%d.ts", uploadSeq)
 
 					// Small delay to ensure OS has finished syncing the file contents
 					time.Sleep(50 * time.Millisecond)
 
-					log.Printf("[Ingester %s] Detected new chunk: %s (Seq: %d)", in.stream.StreamPath, line, seq)
+					log.Printf("[Ingester %s] Detected new chunk: %s (HLS Seq: %d, Upload Seq: %d)", in.stream.StreamPath, line, hlsSeq, uploadSeq)
 					select {
 					case <-ctx.Done():
 						return
 					case in.chunkChan <- ChunkJob{
 						Path:      filePath,
-						SeqNum:    seq,
-						Filename:  line,
+						SeqNum:    uploadSeq,
+						Filename:  uploadFilename,
 						CreatedAt: time.Now(),
 					}:
 					}
-					lastQueuedSeq = seq
+					lastQueuedSeq = hlsSeq
 				}
 			}
 		}
+	}
+}
+
+func (in *Ingester) nextSequence() int64 {
+	in.seqMu.Lock()
+	defer in.seqMu.Unlock()
+
+	seq := in.nextUploadSeq
+	in.nextUploadSeq++
+	in.persistSequenceStateLocked()
+	return seq
+}
+
+func (in *Ingester) loadSequenceState() {
+	in.seqMu.Lock()
+	defer in.seqMu.Unlock()
+
+	data, err := os.ReadFile(in.sequenceStatePath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("[Ingester %s] Failed to read sequence state %s: %v", in.stream.StreamPath, in.sequenceStatePath, err)
+		}
+		return
+	}
+
+	nextSeq, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	if err != nil || nextSeq < 0 {
+		log.Printf("[Ingester %s] Ignoring invalid sequence state %s", in.stream.StreamPath, in.sequenceStatePath)
+		return
+	}
+
+	in.nextUploadSeq = nextSeq
+	log.Printf("[Ingester %s] Resuming upload sequence from %d", in.stream.StreamPath, in.nextUploadSeq)
+}
+
+func (in *Ingester) persistSequenceStateLocked() {
+	if in.sequenceStatePath == "" {
+		return
+	}
+	data := []byte(strconv.FormatInt(in.nextUploadSeq, 10))
+	if err := os.WriteFile(in.sequenceStatePath, data, 0644); err != nil {
+		log.Printf("[Ingester %s] Failed to persist sequence state %s: %v", in.stream.StreamPath, in.sequenceStatePath, err)
 	}
 }
 

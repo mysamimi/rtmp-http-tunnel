@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -35,6 +36,10 @@ func (s *Streamer) Start(ctx context.Context) error {
 		default:
 		}
 
+		log.Printf("[Streamer] Waiting for buffer before connecting output to: %s", s.targetRTMPURL)
+		if err := s.buffer.WaitUntilReady(ctx); err != nil {
+			return err
+		}
 		log.Printf("[Streamer] Starting FFmpeg restreamer output to: %s", s.targetRTMPURL)
 
 		// Start FFmpeg to read from stdin (-) and output to RTMP.
@@ -87,7 +92,7 @@ func (s *Streamer) Start(ctx context.Context) error {
 			continue
 		}
 
-		log.Println("[Streamer] FFmpeg output process started, waiting for buffer to start feeding chunks...")
+		log.Println("[Streamer] FFmpeg output process started, feeding buffered chunks...")
 
 		// Feed chunks loop
 		streamErr := s.feedChunks(ctx, stdinPipe)
@@ -124,6 +129,9 @@ func (s *Streamer) feedChunks(ctx context.Context, writer io.WriteCloser) error 
 		if err != nil {
 			// This could be a timeout skip or a context cancellation
 			log.Printf("[Streamer] Buffer pop error: %v", err)
+			if errors.Is(err, ErrBufferDrained) {
+				return err
+			}
 			continue
 		}
 
