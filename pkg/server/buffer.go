@@ -17,12 +17,13 @@ import (
 var ErrBufferDrained = errors.New("buffer drained")
 
 type Buffer struct {
-	cfg        *common.ServerConfig
-	tempDir    string
-	mu         sync.Mutex
-	chunks     map[int64]string // maps sequence number to local file path
-	nextSeq    int64
-	hasStarted bool
+	cfg            *common.ServerConfig
+	tempDir        string
+	mu             sync.Mutex
+	chunks         map[int64]string // maps sequence number to local file path
+	nextSeq        int64
+	hasStarted     bool
+	hasEverStarted bool
 }
 
 func NewBuffer(cfg *common.ServerConfig, tempDir string) *Buffer {
@@ -107,7 +108,6 @@ func (b *Buffer) Pop(ctx context.Context) (string, int64, error) {
 
 // WaitUntilReady blocks until enough chunks are buffered to start or restart FFmpeg.
 func (b *Buffer) WaitUntilReady(ctx context.Context) error {
-	requiredChunks := b.requiredChunks()
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -117,8 +117,10 @@ func (b *Buffer) WaitUntilReady(ctx context.Context) error {
 			b.mu.Unlock()
 			return nil
 		}
+		isResume := b.hasEverStarted
+		requiredChunks := b.requiredChunks(isResume)
 		if len(b.chunks) >= requiredChunks {
-			b.startLocked(requiredChunks)
+			b.startLocked(requiredChunks, isResume)
 			b.mu.Unlock()
 			return nil
 		}
@@ -132,16 +134,47 @@ func (b *Buffer) WaitUntilReady(ctx context.Context) error {
 	}
 }
 
-func (b *Buffer) requiredChunks() int {
-	requiredChunks := b.cfg.BufferDuration / b.cfg.ChunkDuration
+func (b *Buffer) requiredChunks(isResume bool) int {
+	if isResume {
+		return b.rebufferRequiredChunks()
+	}
+	return b.initialRequiredChunks()
+}
+
+func (b *Buffer) initialRequiredChunks() int {
+	requiredChunks := ceilDiv(b.cfg.BufferDuration, b.cfg.ChunkDuration)
 	if requiredChunks <= 0 {
 		return 15 // Default to 30s buffer if chunk duration is invalid
 	}
 	return requiredChunks
 }
 
-func (b *Buffer) startLocked(requiredChunks int) {
+func (b *Buffer) rebufferRequiredChunks() int {
+	duration := b.cfg.RebufferDuration
+	if duration <= 0 {
+		duration = b.cfg.ChunkDuration * 2
+	}
+	requiredChunks := ceilDiv(duration, b.cfg.ChunkDuration)
+	if requiredChunks <= 0 {
+		requiredChunks = 1
+	}
+	initialChunks := b.initialRequiredChunks()
+	if requiredChunks > initialChunks {
+		return initialChunks
+	}
+	return requiredChunks
+}
+
+func ceilDiv(a, b int) int {
+	if a <= 0 || b <= 0 {
+		return 0
+	}
+	return (a + b - 1) / b
+}
+
+func (b *Buffer) startLocked(requiredChunks int, isResume bool) {
 	b.hasStarted = true
+	b.hasEverStarted = true
 	var minSeq int64 = -1
 	for seq := range b.chunks {
 		if minSeq == -1 || seq < minSeq {
@@ -149,7 +182,11 @@ func (b *Buffer) startLocked(requiredChunks int) {
 		}
 	}
 	b.nextSeq = minSeq
-	log.Printf("[Buffer] Buffer filled (%d/%d chunks). Starting streaming from Seq %d", len(b.chunks), requiredChunks, b.nextSeq)
+	if isResume {
+		log.Printf("[Buffer] Rebuffer filled (%d/%d chunks). Resuming streaming from Seq %d", len(b.chunks), requiredChunks, b.nextSeq)
+	} else {
+		log.Printf("[Buffer] Buffer filled (%d/%d chunks). Starting streaming from Seq %d", len(b.chunks), requiredChunks, b.nextSeq)
+	}
 }
 
 // Reset clears the buffer and cleans up untransmitted files on disk
@@ -164,6 +201,7 @@ func (b *Buffer) Reset() {
 
 	b.chunks = make(map[int64]string)
 	b.hasStarted = false
+	b.hasEverStarted = false
 	b.nextSeq = 0
 
 	// Also clean up any loose .ts files in tempDir

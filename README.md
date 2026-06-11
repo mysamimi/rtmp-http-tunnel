@@ -75,6 +75,7 @@ Copy `config.json.example` to `config.json` and adjust parameters:
     "auth_token": "a-strong-random-shared-secret-token",
     "obfuscation_key": "some-secret-xor-obfuscation-key",
     "buffer_duration": 60,
+    "rebuffer_duration": 4,
     "chunk_duration": 2,
     "inactive_session_timeout": 120,
     "tls_cert_file": "/etc/letsencrypt/live/your-server-ip/fullchain.pem",
@@ -104,6 +105,7 @@ Copy `config.json.example` to `config.json` and adjust parameters:
 - `"auth_token"`: Required shared bearer token. The client and server values must match.
 - `"obfuscation_key"`: Required shared XOR key. The client and server values must match.
 - `"buffer_duration"` and `"chunk_duration"`: On the server, `buffer_duration` must be greater than `chunk_duration`; otherwise the server refuses to start.
+- `"rebuffer_duration"`: Optional fast-resume buffer after a stream has already started once. Defaults to roughly two chunks when omitted. Set it to a small value like `4` to resume quickly after a client restart while keeping a larger initial `buffer_duration`.
 - `"streams"` (Client): Array of local streaming pipelines, defining:
   - `"stream_path"`: Server route identifier (`/s/{stream_path}/upload`).
   - `"input_url"`: Universal input URL. Supported formats:

@@ -53,6 +53,15 @@ func TestConfigValidateRejectsInvalidBuffer(t *testing.T) {
 	}
 }
 
+func TestConfigValidateRejectsNegativeRebufferDuration(t *testing.T) {
+	cfg := validConfig()
+	cfg.Server.RebufferDuration = -1
+
+	if err := cfg.Validate("server"); err == nil {
+		t.Fatal("Validate accepted negative rebuffer_duration")
+	}
+}
+
 func validConfig() *Config {
 	return &Config{
 		Mode: "client",

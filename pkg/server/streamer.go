@@ -105,8 +105,12 @@ func (s *Streamer) Start(ctx context.Context) error {
 
 		_ = cmd.Wait()
 
-		log.Printf("[Streamer] FFmpeg output process exited: %v. Resetting buffer and restarting streamer...", streamErr)
-		s.buffer.Reset() // Clear queue so we start clean next time
+		if errors.Is(streamErr, ErrBufferDrained) {
+			log.Printf("[Streamer] FFmpeg output process exited because buffer drained: %v. Waiting for quick rebuffer...", streamErr)
+		} else {
+			log.Printf("[Streamer] FFmpeg output process exited: %v. Resetting buffer and restarting streamer...", streamErr)
+			s.buffer.Reset() // Clear queue so we start clean next time
+		}
 
 		select {
 		case <-ctx.Done():

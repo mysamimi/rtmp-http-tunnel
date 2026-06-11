@@ -37,6 +37,7 @@ type ServerConfig struct {
 	AuthToken              string               `json:"auth_token"`
 	ObfuscationKey         string               `json:"obfuscation_key"`
 	BufferDuration         int                  `json:"buffer_duration"`
+	RebufferDuration       int                  `json:"rebuffer_duration"`
 	ChunkDuration          int                  `json:"chunk_duration"`
 	InactiveSessionTimeout int                  `json:"inactive_session_timeout"` // seconds
 	TLSCertFile            string               `json:"tls_cert_file"`
@@ -139,6 +140,9 @@ func validateServerConfig(cfg ServerConfig) error {
 	}
 	if cfg.BufferDuration <= cfg.ChunkDuration {
 		return fmt.Errorf("server.buffer_duration must be greater than server.chunk_duration")
+	}
+	if cfg.RebufferDuration < 0 {
+		return fmt.Errorf("server.rebuffer_duration must not be negative")
 	}
 	if cfg.InactiveSessionTimeout <= 0 {
 		return fmt.Errorf("server.inactive_session_timeout must be greater than zero")

@@ -22,6 +22,7 @@
     "auth_token": "a-strong-random-shared-secret-token",
     "obfuscation_key": "some-secret-xor-obfuscation-key",
     "buffer_duration": 60,
+    "rebuffer_duration": 4,
     "chunk_duration": 2,
     "inactive_session_timeout": 120,
     "tls_cert_file": "/etc/letsencrypt/live/your-server-ip/fullchain.pem",
