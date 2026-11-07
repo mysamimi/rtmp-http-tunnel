@@ -12,17 +12,26 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mysamimi/rtmp-http-tunnel/pkg/common"
 )
 
+const (
+	defaultBufferDuration = 60
+	defaultChunkDuration  = 2
+)
+
+// discoveryRetryEvery is how often an unreachable server is asked for its settings again.
+var discoveryRetryEvery = 30 * time.Second
+
 type Uploader struct {
-	cfg         *common.ClientConfig
-	stream      common.StreamConfig
-	chunkChan   <-chan ChunkJob
-	httpClient  *http.Client
-	maxChunkAge time.Duration
+	cfg        *common.ClientConfig
+	stream     common.StreamConfig
+	chunkChan  <-chan ChunkJob
+	httpClient *http.Client
+	maxAge     atomic.Int64 // time.Duration; updated when the server settings are (re)discovered
 
 	backlogMu      sync.Mutex
 	lastBacklogLog time.Time
@@ -59,33 +68,30 @@ func NewUploader(cfg *common.ClientConfig, stream common.StreamConfig, chunkChan
 	}, nil
 }
 
-func (u *Uploader) discoverBufferConfig(ctx context.Context) {
+// discoverBufferConfig asks the server for its buffer settings and derives the chunk
+// expiry from them. It reports whether the settings were obtained.
+func (u *Uploader) discoverBufferConfig(ctx context.Context) bool {
 	url := fmt.Sprintf("%s/s/%s/health", u.cfg.ServerURL, u.stream.StreamPath)
-
-	// Fallback defaults
-	defaultBufferDuration := 60
-	defaultChunkDuration := 2
-	u.maxChunkAge = time.Duration(defaultBufferDuration-defaultChunkDuration) * time.Second
 
 	log.Printf("[Uploader %s] Querying health endpoint for buffer configuration: %s", u.stream.StreamPath, url)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		log.Printf("[Uploader %s] Failed to create health check request: %v. Using fallback max age %v.", u.stream.StreamPath, err, u.maxChunkAge)
-		return
+		log.Printf("[Uploader %s] Failed to create health check request: %v. Using fallback max age %v.", u.stream.StreamPath, err, u.maxChunkAge())
+		return false
 	}
 	req.Header.Set("Authorization", "Bearer "+u.cfg.AuthToken)
 
 	resp, err := u.httpClient.Do(req)
 	if err != nil {
-		log.Printf("[Uploader %s] Health check request failed: %v. Using fallback max age %v.", u.stream.StreamPath, err, u.maxChunkAge)
-		return
+		log.Printf("[Uploader %s] Health check request failed: %v. Using fallback max age %v.", u.stream.StreamPath, err, u.maxChunkAge())
+		return false
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[Uploader %s] Health check returned status %d%s. Using fallback max age %v.", u.stream.StreamPath, resp.StatusCode, statusHint(resp.StatusCode), u.maxChunkAge)
-		return
+		log.Printf("[Uploader %s] Health check returned status %d%s. Using fallback max age %v.", u.stream.StreamPath, resp.StatusCode, statusHint(resp.StatusCode), u.maxChunkAge())
+		return false
 	}
 
 	var result struct {
@@ -93,8 +99,8 @@ func (u *Uploader) discoverBufferConfig(ctx context.Context) {
 		ChunkDuration  int `json:"chunk_duration"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		log.Printf("[Uploader %s] Failed to parse health check response: %v. Using fallback max age %v.", u.stream.StreamPath, err, u.maxChunkAge)
-		return
+		log.Printf("[Uploader %s] Failed to parse health check response: %v. Using fallback max age %v.", u.stream.StreamPath, err, u.maxChunkAge())
+		return false
 	}
 
 	bufferDur := result.BufferDuration
@@ -107,8 +113,8 @@ func (u *Uploader) discoverBufferConfig(ctx context.Context) {
 	}
 	if bufferDur <= chunkDur {
 		log.Printf("[Uploader %s] Invalid server buffer settings (buffer_duration=%ds, chunk_duration=%ds). Using fallback max age %v.",
-			u.stream.StreamPath, bufferDur, chunkDur, u.maxChunkAge)
-		return
+			u.stream.StreamPath, bufferDur, chunkDur, u.maxChunkAge())
+		return false
 	}
 
 	if chunkDur != u.cfg.ChunkDuration {
@@ -116,15 +122,20 @@ func (u *Uploader) discoverBufferConfig(ctx context.Context) {
 			u.stream.StreamPath, u.cfg.ChunkDuration, chunkDur)
 	}
 
-	u.maxChunkAge = time.Duration(bufferDur-chunkDur) * time.Second
+	u.setMaxChunkAge(time.Duration(bufferDur-chunkDur) * time.Second)
 	log.Printf("[Uploader %s] Successfully discovered buffer configuration from server: buffer_duration=%ds, chunk_duration=%ds. Calculated maxChunkAge: %v",
-		u.stream.StreamPath, bufferDur, chunkDur, u.maxChunkAge)
+		u.stream.StreamPath, bufferDur, chunkDur, u.maxChunkAge())
+	return true
 }
 
 // Start spawns the concurrent upload workers.
 func (u *Uploader) Start(ctx context.Context) {
-	// Query server health for buffer config before starting workers
-	u.discoverBufferConfig(ctx)
+	// Query server health for buffer config before starting workers. Until it succeeds
+	// a conservative fallback is used; if the server is unreachable now, keep trying.
+	u.setMaxChunkAge(time.Duration(defaultBufferDuration-defaultChunkDuration) * time.Second)
+	if !u.discoverBufferConfig(ctx) {
+		go u.retryDiscovery(ctx)
+	}
 
 	var wg sync.WaitGroup
 
@@ -195,9 +206,9 @@ func (u *Uploader) uploadWithRetry(ctx context.Context, job ChunkJob, maxRetries
 
 		// Smart Expiry Check
 		age := time.Since(job.CreatedAt)
-		if age > u.maxChunkAge {
+		if age > u.maxChunkAge() {
 			log.Printf("[Uploader %s] Chunk Seq %d EXPIRED (age: %.1fs > max: %.1fs). Skipping upload.",
-				u.stream.StreamPath, job.SeqNum, age.Seconds(), u.maxChunkAge.Seconds())
+				u.stream.StreamPath, job.SeqNum, age.Seconds(), u.maxChunkAge().Seconds())
 			return nil // Return nil so it's not logged as a failed chunk error to clean up the file
 		}
 
@@ -278,7 +289,8 @@ func statusHint(code int) string {
 func (u *Uploader) warnOnBacklog() {
 	backlog := len(u.chunkChan)
 	queued := time.Duration(backlog*u.cfg.ChunkDuration) * time.Second
-	if backlog == 0 || u.maxChunkAge <= 0 || queued < u.maxChunkAge/2 {
+	maxAge := u.maxChunkAge()
+	if backlog == 0 || maxAge <= 0 || queued < maxAge/2 {
 		return
 	}
 
@@ -289,5 +301,25 @@ func (u *Uploader) warnOnBacklog() {
 	}
 	u.lastBacklogLog = time.Now()
 	log.Printf("[Uploader %s] WARNING: %d chunks (~%v of stream) are waiting for upload; chunks older than %v are dropped. The uplink is slower than the stream bitrate: lower the encoder bitrate or raise concurrency.",
-		u.stream.StreamPath, backlog, queued, u.maxChunkAge)
+		u.stream.StreamPath, backlog, queued, maxAge)
+}
+
+func (u *Uploader) maxChunkAge() time.Duration { return time.Duration(u.maxAge.Load()) }
+
+func (u *Uploader) setMaxChunkAge(d time.Duration) { u.maxAge.Store(int64(d)) }
+
+// retryDiscovery keeps asking the server for its buffer settings until it answers.
+func (u *Uploader) retryDiscovery(ctx context.Context) {
+	ticker := time.NewTicker(discoveryRetryEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if u.discoverBufferConfig(ctx) {
+				return
+			}
+		}
+	}
 }

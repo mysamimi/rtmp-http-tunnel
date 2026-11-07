@@ -24,6 +24,7 @@ type Buffer struct {
 	nextSeq        int64
 	hasStarted     bool
 	hasEverStarted bool
+	notify         chan struct{} // signalled (non-blocking) whenever the set of chunks changes
 }
 
 func NewBuffer(cfg *common.ServerConfig, tempDir string) *Buffer {
@@ -31,6 +32,15 @@ func NewBuffer(cfg *common.ServerConfig, tempDir string) *Buffer {
 		cfg:     cfg,
 		tempDir: tempDir,
 		chunks:  make(map[int64]string),
+		notify:  make(chan struct{}, 1),
+	}
+}
+
+// signal wakes a goroutine waiting in Pop or WaitUntilReady.
+func (b *Buffer) signal() {
+	select {
+	case b.notify <- struct{}{}:
+	default:
 	}
 }
 
@@ -49,6 +59,7 @@ func (b *Buffer) Add(seqNum int64, filePath string) {
 	b.chunks[seqNum] = filePath
 	log.Printf("[Buffer] Added chunk %d (Total buffered chunks: %d)", seqNum, len(b.chunks))
 	b.evictOverflowLocked()
+	b.signal()
 }
 
 // maxChunks is the most chunks kept on disk; beyond it the oldest are dropped so a
@@ -109,6 +120,7 @@ func (b *Buffer) Requeue(seqNum int64, filePath string) {
 		b.nextSeq = seqNum
 	}
 	b.evictOverflowLocked()
+	b.signal()
 }
 
 // Pop retrieves the next chunk in sequence. It blocks if the next chunk is not yet ready,
@@ -165,11 +177,21 @@ func (b *Buffer) Pop(ctx context.Context) (string, int64, error) {
 		}
 
 		b.mu.Unlock()
+		// Sleep until a chunk arrives or the skip deadline passes. The one-second cap is a
+		// safety net so a missed wake-up can only delay, never stall, playback.
+		wait := limit - time.Since(start)
+		if wait > time.Second {
+			wait = time.Second
+		}
+		timer := time.NewTimer(wait)
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return "", 0, ctx.Err()
-		case <-time.After(100 * time.Millisecond):
+		case <-b.notify:
+		case <-timer.C:
 		}
+		timer.Stop()
 		b.mu.Lock()
 	}
 }
@@ -218,6 +240,7 @@ func (b *Buffer) WaitUntilReady(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-b.notify:
 		case <-ticker.C:
 		}
 	}

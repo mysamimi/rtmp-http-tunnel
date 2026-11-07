@@ -1,10 +1,13 @@
 package client
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -215,5 +218,25 @@ func TestScanPlaylistReadsExtinfDurations(t *testing.T) {
 	ingester.scanPlaylist(context.Background(), playlistPath, regexp.MustCompile(`chunk_(\d+)\.ts`), &last)
 	if !ingester.warnedLongSegment {
 		t.Fatal("6s EXTINF segment did not trigger the keyframe warning")
+	}
+}
+
+func TestLogFFmpegOutputSplitsLinesAndDropsProgress(t *testing.T) {
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	defer log.SetOutput(os.Stderr)
+
+	ingester := NewIngester(&common.ClientConfig{}, common.StreamConfig{StreamPath: "s"}, make(chan ChunkJob, 1))
+	input := "Input #0, flv\r\nframe=  10 fps= 25 q=-1.0 size=  100KiB time=00:00:00.40 speed=1.0x    \rframe=  20 fps= 25 size= 200KiB speed=1.0x\rError while decoding\nlast without newline"
+	ingester.logFFmpegOutput(strings.NewReader(input))
+
+	out := logged.String()
+	for _, want := range []string{"[FFmpeg-s] Input #0, flv", "[FFmpeg-s] Error while decoding", "[FFmpeg-s] last without newline"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("log is missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "frame=") {
+		t.Errorf("progress lines were not dropped:\n%s", out)
 	}
 }

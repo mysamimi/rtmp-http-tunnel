@@ -169,3 +169,30 @@ func TestBufferRequeueRestoresPlaybackPosition(t *testing.T) {
 		t.Fatalf("Pop after Requeue = seq %d, err %v; want 0 again", seq, err)
 	}
 }
+
+func TestBufferPopWakesWhenChunkArrives(t *testing.T) {
+	tempDir := t.TempDir()
+	buf := NewBuffer(&common.ServerConfig{BufferDuration: 2, ChunkDuration: 1}, tempDir)
+	buf.Add(0, filepath.Join(tempDir, "chunk_0.ts"))
+	buf.Add(1, filepath.Join(tempDir, "chunk_1.ts"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	for i := 0; i < 2; i++ {
+		if _, _, err := buf.Pop(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		buf.Add(2, filepath.Join(tempDir, "chunk_2.ts"))
+	}()
+	start := time.Now()
+	if _, seq, err := buf.Pop(ctx); err != nil || seq != 2 {
+		t.Fatalf("Pop = seq %d, err %v; want 2", seq, err)
+	}
+	if elapsed := time.Since(start); elapsed > 600*time.Millisecond {
+		t.Fatalf("Pop took %v to notice the new chunk", elapsed)
+	}
+}

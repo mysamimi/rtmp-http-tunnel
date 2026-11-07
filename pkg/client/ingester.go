@@ -1,6 +1,8 @@
 package client
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -193,19 +195,12 @@ func (in *Ingester) Start(ctx context.Context) error {
 			log.Printf("[Ingester %s] FFmpeg pull connection started...", in.stream.StreamPath)
 		}
 
-		// Run stderr reader in goroutine to log stream state
+		// Log FFmpeg's output line by line. The reader must finish before cmd.Wait,
+		// which closes the pipe.
+		stderrDone := make(chan struct{})
 		go func() {
-			buf := make([]byte, 1024)
-			for {
-				n, err := stderr.Read(buf)
-				if n > 0 {
-					// Log ffmpeg detailed debug logs
-					log.Printf("[FFmpeg-%s] %s", in.stream.StreamPath, string(buf[:n]))
-				}
-				if err != nil {
-					break
-				}
-			}
+			defer close(stderrDone)
+			in.logFFmpegOutput(stderr)
 		}()
 
 		// Start monitoring the index.m3u8 playlist file while FFmpeg runs
@@ -220,6 +215,7 @@ func (in *Ingester) Start(ctx context.Context) error {
 		}()
 
 		// Wait for FFmpeg to exit (meaning OBS stopped streaming or client disconnected)
+		<-stderrDone
 		err = cmd.Wait()
 
 		// FFmpeg finalizes the last segment on exit: let the monitor queue it before stopping.
@@ -346,6 +342,40 @@ func (in *Ingester) warnIfSegmentTooLong(seconds float64) {
 		in.stream.StreamPath, seconds, in.cfg.ChunkDuration, in.cfg.ChunkDuration)
 }
 
+// logFFmpegOutput logs FFmpeg's stderr one line at a time. FFmpeg separates its live
+// progress updates with carriage returns, so both \r and \n end a line; the progress
+// lines themselves are dropped because they would flood the log.
+func (in *Ingester) logFFmpegOutput(r io.Reader) {
+	scanner := bufio.NewScanner(r)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	scanner.Split(splitCRLF)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || isFFmpegProgress(line) {
+			continue
+		}
+		log.Printf("[FFmpeg-%s] %s", in.stream.StreamPath, line)
+	}
+}
+
+func isFFmpegProgress(line string) bool {
+	return (strings.HasPrefix(line, "frame=") || strings.HasPrefix(line, "size=")) && strings.Contains(line, "speed=")
+}
+
+// splitCRLF is bufio.ScanLines that also splits on a lone carriage return.
+func splitCRLF(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+	if i := bytes.IndexAny(data, "\r\n"); i >= 0 {
+		return i + 1, data[:i], nil
+	}
+	if atEOF {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
+}
+
 func (in *Ingester) nextSequence() int64 {
 	in.seqMu.Lock()
 	defer in.seqMu.Unlock()
@@ -398,21 +428,4 @@ func (in *Ingester) cleanupTempDir() {
 			_ = os.Remove(filepath.Join(in.stream.TempDir, f.Name()))
 		}
 	}
-}
-
-func copyFile(src, dst string) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer in.Close()
-
-	out, err := os.Create(dst)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	_, err = io.Copy(out, in)
-	return err
 }

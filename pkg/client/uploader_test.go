@@ -3,8 +3,11 @@ package client
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,7 +19,7 @@ func TestUploadWithRetryDoesNotRetryMissingFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u.maxChunkAge = time.Minute
+	u.setMaxChunkAge(time.Minute)
 
 	start := time.Now()
 	err = u.uploadWithRetry(context.Background(), ChunkJob{
@@ -36,7 +39,7 @@ func TestWarnOnBacklogOnlyWhenQueueIsDeep(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	u.maxChunkAge = 58 * time.Second
+	u.setMaxChunkAge(58 * time.Second)
 
 	for i := 0; i < 5; i++ { // ~10s of stream: fine
 		ch <- ChunkJob{}
@@ -52,5 +55,42 @@ func TestWarnOnBacklogOnlyWhenQueueIsDeep(t *testing.T) {
 	u.warnOnBacklog()
 	if u.lastBacklogLog.IsZero() {
 		t.Fatal("did not warn for a deep backlog")
+	}
+}
+
+func TestRetryDiscoveryPicksUpServerSettingsLater(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"ok","buffer_duration":30,"chunk_duration":2}`))
+	}))
+	defer srv.Close()
+
+	old := discoveryRetryEvery
+	discoveryRetryEvery = 20 * time.Millisecond
+	defer func() { discoveryRetryEvery = old }()
+
+	u, err := NewUploader(&common.ClientConfig{ServerURL: srv.URL, ChunkDuration: 2}, common.StreamConfig{StreamPath: "s"}, make(chan ChunkJob))
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.setMaxChunkAge(58 * time.Second)
+
+	if u.discoverBufferConfig(context.Background()) {
+		t.Fatal("discovery reported success against a failing server")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go u.retryDiscovery(ctx)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for u.maxChunkAge() != 28*time.Second {
+		if time.Now().After(deadline) {
+			t.Fatalf("maxChunkAge = %v, want 28s after retry", u.maxChunkAge())
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
