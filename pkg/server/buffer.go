@@ -96,6 +96,21 @@ func (b *Buffer) evictOverflowLocked() {
 	log.Printf("[Buffer] WARNING: buffer exceeded %d chunks (output stalled?). Dropped %d oldest chunk(s)", limit, dropped)
 }
 
+// Requeue puts back a chunk that was popped but could not be delivered, so the next
+// streamer run starts from it again.
+func (b *Buffer) Requeue(seqNum int64, filePath string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, exists := b.chunks[seqNum]; exists {
+		return
+	}
+	b.chunks[seqNum] = filePath
+	if b.hasStarted && seqNum < b.nextSeq {
+		b.nextSeq = seqNum
+	}
+	b.evictOverflowLocked()
+}
+
 // Pop retrieves the next chunk in sequence. It blocks if the next chunk is not yet ready,
 // or if the buffer is not yet filled to the required threshold.
 func (b *Buffer) Pop(ctx context.Context) (string, int64, error) {

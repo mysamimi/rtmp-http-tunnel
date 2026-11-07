@@ -152,12 +152,16 @@ func (s *Streamer) feedChunks(ctx context.Context, writer io.WriteCloser) error 
 		// Write data to FFmpeg stdin
 		_, err = writer.Write(data)
 
-		// Delete file as we have written it to FFmpeg pipe
-		_ = os.Remove(filePath)
-
 		if err != nil {
+			// The output connection is gone. Put the chunk back so reconnect attempts
+			// (which fail fast while the target is unreachable) do not burn through
+			// the buffer one chunk at a time.
+			s.buffer.Requeue(seq, filePath)
 			return fmt.Errorf("failed writing chunk %d to ffmpeg stdin (likely broken pipe): %w", seq, err)
 		}
+
+		// Delete file as we have written it to FFmpeg pipe
+		_ = os.Remove(filePath)
 
 		log.Printf("[Streamer] Wrote chunk Seq %d to FFmpeg", seq)
 	}

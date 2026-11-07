@@ -150,3 +150,22 @@ func TestBufferEvictionAdvancesPlaybackPosition(t *testing.T) {
 		t.Fatal("Pop waited for chunks that were evicted")
 	}
 }
+
+func TestBufferRequeueRestoresPlaybackPosition(t *testing.T) {
+	tempDir := t.TempDir()
+	buf := NewBuffer(&common.ServerConfig{BufferDuration: 4, ChunkDuration: 2}, tempDir)
+	buf.Add(0, filepath.Join(tempDir, "chunk_0.ts"))
+	buf.Add(1, filepath.Join(tempDir, "chunk_1.ts"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	path, seq, err := buf.Pop(ctx)
+	if err != nil || seq != 0 {
+		t.Fatalf("Pop = seq %d, err %v; want 0", seq, err)
+	}
+
+	buf.Requeue(seq, path)
+	if _, seq, err := buf.Pop(ctx); err != nil || seq != 0 {
+		t.Fatalf("Pop after Requeue = seq %d, err %v; want 0 again", seq, err)
+	}
+}

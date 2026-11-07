@@ -221,3 +221,14 @@ If you receive a `port is already allocated` or `bind: address already in use` e
   ```bash
   docker rm -f $(docker ps -a -q --filter name=rtmp-http-tunnel-client-)
   ```
+
+---
+
+## Testing
+
+```bash
+go test ./...            # unit tests plus end-to-end tests (needs ffmpeg and ffprobe in PATH, ~1 minute)
+go test -short ./...     # unit tests only
+```
+
+The end-to-end tests in `e2e/` start the real client and server in-process with real FFmpeg: a synthetic encoder sends MPEG-TS over UDP to the client, and a local TCP sink stands in for YouTube. They cover the normal path and the target dropping the connection mid-stream and coming back. They skip themselves when FFmpeg is missing. They do not use RTMP, because many FFmpeg builds (e.g. Homebrew's, built with librtmp) cannot listen for RTMP, so real RTMP ingest is not covered.

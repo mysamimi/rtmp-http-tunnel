@@ -11,7 +11,7 @@ import (
 )
 
 // A fake ffmpeg that reads a single byte and exits makes the pipe break on the
-// first chunk. The remaining buffered chunks must be preserved for the reconnect.
+// first chunk. All buffered chunks, including the undelivered one, must be kept for the reconnect.
 func TestStreamerKeepsBufferWhenOutputDies(t *testing.T) {
 	binDir := t.TempDir()
 	script := "#!/bin/sh\nhead -c 1 >/dev/null\nexit 1\n"
@@ -50,8 +50,9 @@ func TestStreamerKeepsBufferWhenOutputDies(t *testing.T) {
 	cancel()
 	<-done
 
-	if remaining != total-1 {
-		t.Fatalf("buffered chunks after output failure = %d, want %d", remaining, total-1)
+	// The chunk that failed to write is put back, so nothing is lost.
+	if remaining != total {
+		t.Fatalf("buffered chunks after output failure = %d, want %d", remaining, total)
 	}
 	if !started || !ever {
 		t.Fatalf("buffer state reset after output failure (hasStarted=%v, hasEverStarted=%v)", started, ever)
