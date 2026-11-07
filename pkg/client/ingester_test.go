@@ -164,3 +164,27 @@ func TestMonitorDrainQueuesFinalSegment(t *testing.T) {
 		t.Fatalf("queued path = %q", job.Path)
 	}
 }
+
+func TestScanPlaylistUsesSegmentModTimeForAge(t *testing.T) {
+	tempDir := t.TempDir()
+	playlistPath := filepath.Join(tempDir, "index.m3u8")
+	chunkChan := make(chan ChunkJob, 1)
+	ingester := NewIngester(&common.ClientConfig{}, common.StreamConfig{StreamPath: "s", TempDir: tempDir}, chunkChan)
+
+	segment := filepath.Join(tempDir, "r1_chunk_0.ts")
+	if err := os.WriteFile(segment, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	written := time.Now().Add(-45 * time.Second)
+	if err := os.Chtimes(segment, written, written); err != nil {
+		t.Fatal(err)
+	}
+	writePlaylist(t, playlistPath, "r1_chunk_0.ts")
+
+	last := int64(-1)
+	ingester.scanPlaylist(context.Background(), playlistPath, regexp.MustCompile(`chunk_(\d+)\.ts`), &last)
+	job := receiveChunkJob(t, chunkChan)
+	if age := time.Since(job.CreatedAt); age < 44*time.Second {
+		t.Fatalf("chunk age = %v, want about 45s (segment write time, not queue time)", age)
+	}
+}

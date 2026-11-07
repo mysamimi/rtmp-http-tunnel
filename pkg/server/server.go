@@ -110,12 +110,28 @@ func (s *Server) StartSessionStreamer(ctx context.Context, session *StreamSessio
 	}
 }
 
-func (s *Server) startCleanupRoutine(ctx context.Context) {
-	timeout := s.cfg.InactiveSessionTimeout
+// effectiveInactiveTimeout returns how long a session may go without uploads before it
+// is torn down. It is never shorter than the time the buffer needs to play out (plus the
+// wait for a final missing chunk), otherwise a healthy stream would be cut while it is
+// still draining its jitter buffer.
+func (s *Server) effectiveInactiveTimeout() time.Duration {
+	timeout := time.Duration(s.cfg.InactiveSessionTimeout) * time.Second
 	if timeout <= 0 {
-		timeout = 120 // Default to 2 minutes
+		timeout = 120 * time.Second
 	}
-	interval := time.Duration(timeout/2) * time.Second
+	minimum := time.Duration(s.cfg.BufferDuration+4*s.cfg.ChunkDuration) * time.Second
+	if timeout < minimum {
+		return minimum
+	}
+	return timeout
+}
+
+func (s *Server) startCleanupRoutine(ctx context.Context) {
+	timeout := s.effectiveInactiveTimeout()
+	if configured := time.Duration(s.cfg.InactiveSessionTimeout) * time.Second; timeout != configured {
+		log.Printf("[Server] inactive_session_timeout (%v) is shorter than the buffer play-out time; using %v", configured, timeout)
+	}
+	interval := timeout / 2
 	if interval < 2*time.Second {
 		interval = 5 * time.Second
 	}
@@ -138,7 +154,7 @@ func (s *Server) startCleanupRoutine(ctx context.Context) {
 			for _, sess := range sessions {
 				sess.Mu.Lock()
 				if sess.CancelFunc != nil {
-					if time.Since(sess.LastActivity) > time.Duration(timeout)*time.Second {
+					if time.Since(sess.LastActivity) > timeout {
 						log.Printf("[Server] Session %s is inactive (last activity: %v). Cleaning up...", sess.Path, sess.LastActivity)
 						sess.CancelFunc()
 						sess.CancelFunc = nil

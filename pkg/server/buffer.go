@@ -48,6 +48,52 @@ func (b *Buffer) Add(seqNum int64, filePath string) {
 
 	b.chunks[seqNum] = filePath
 	log.Printf("[Buffer] Added chunk %d (Total buffered chunks: %d)", seqNum, len(b.chunks))
+	b.evictOverflowLocked()
+}
+
+// maxChunks is the most chunks kept on disk; beyond it the oldest are dropped so a
+// stalled output cannot fill the disk.
+func (b *Buffer) maxChunks() int {
+	if b.cfg.MaxBufferedChunks > 0 {
+		return b.cfg.MaxBufferedChunks
+	}
+	n := b.initialRequiredChunks() * 3
+	if n < 30 {
+		n = 30
+	}
+	return n
+}
+
+func (b *Buffer) evictOverflowLocked() {
+	limit := b.maxChunks()
+	if len(b.chunks) <= limit {
+		return
+	}
+	dropped := 0
+	for len(b.chunks) > limit {
+		minSeq := int64(-1)
+		for seq := range b.chunks {
+			if minSeq == -1 || seq < minSeq {
+				minSeq = seq
+			}
+		}
+		_ = os.Remove(b.chunks[minSeq])
+		delete(b.chunks, minSeq)
+		dropped++
+	}
+	// Playback resumes from the oldest chunk we still have instead of waiting for dropped ones.
+	if b.hasStarted {
+		minSeq := int64(-1)
+		for seq := range b.chunks {
+			if minSeq == -1 || seq < minSeq {
+				minSeq = seq
+			}
+		}
+		if minSeq > b.nextSeq {
+			b.nextSeq = minSeq
+		}
+	}
+	log.Printf("[Buffer] WARNING: buffer exceeded %d chunks (output stalled?). Dropped %d oldest chunk(s)", limit, dropped)
 }
 
 // Pop retrieves the next chunk in sequence. It blocks if the next chunk is not yet ready,

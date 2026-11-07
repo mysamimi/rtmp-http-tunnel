@@ -165,3 +165,21 @@ func TestConfigValidateRejectsNegativeClientCounts(t *testing.T) {
 		t.Fatal("Validate accepted negative max_upload_retries")
 	}
 }
+
+func TestConfigValidateMaxBufferedChunks(t *testing.T) {
+	cfg := validConfig()
+	cfg.Server.MaxBufferedChunks = -1
+	if err := cfg.Validate("server"); err == nil {
+		t.Fatal("Validate accepted negative max_buffered_chunks")
+	}
+
+	cfg = validConfig() // buffer 60s / chunk 2s needs 30 chunks
+	cfg.Server.MaxBufferedChunks = 29
+	if err := cfg.Validate("server"); err == nil {
+		t.Fatal("Validate accepted a cap smaller than the initial buffer")
+	}
+	cfg.Server.MaxBufferedChunks = 30
+	if err := cfg.Validate("server"); err != nil {
+		t.Fatalf("Validate rejected a cap equal to the initial buffer: %v", err)
+	}
+}

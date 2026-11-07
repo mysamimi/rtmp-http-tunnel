@@ -29,3 +29,28 @@ func TestUploadWithRetryDoesNotRetryMissingFile(t *testing.T) {
 		t.Fatalf("missing file was retried (took %v)", time.Since(start))
 	}
 }
+
+func TestWarnOnBacklogOnlyWhenQueueIsDeep(t *testing.T) {
+	ch := make(chan ChunkJob, 40)
+	u, err := NewUploader(&common.ClientConfig{ChunkDuration: 2}, common.StreamConfig{StreamPath: "s"}, ch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.maxChunkAge = 58 * time.Second
+
+	for i := 0; i < 5; i++ { // ~10s of stream: fine
+		ch <- ChunkJob{}
+	}
+	u.warnOnBacklog()
+	if !u.lastBacklogLog.IsZero() {
+		t.Fatal("warned for a shallow backlog")
+	}
+
+	for i := 0; i < 20; i++ { // ~50s of stream, close to the 58s expiry
+		ch <- ChunkJob{}
+	}
+	u.warnOnBacklog()
+	if u.lastBacklogLog.IsZero() {
+		t.Fatal("did not warn for a deep backlog")
+	}
+}

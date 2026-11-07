@@ -23,6 +23,9 @@ type Uploader struct {
 	chunkChan   <-chan ChunkJob
 	httpClient  *http.Client
 	maxChunkAge time.Duration
+
+	backlogMu      sync.Mutex
+	lastBacklogLog time.Time
 }
 
 func NewUploader(cfg *common.ClientConfig, stream common.StreamConfig, chunkChan <-chan ChunkJob) (*Uploader, error) {
@@ -159,6 +162,7 @@ func (u *Uploader) worker(ctx context.Context, workerID int) {
 				return
 			}
 
+			u.warnOnBacklog()
 			log.Printf("[Uploader-Worker-%d-%s] Uploading chunk %s (Seq: %d)...", workerID, u.stream.StreamPath, job.Filename, job.SeqNum)
 
 			maxRetries := u.cfg.MaxUploadRetries
@@ -266,4 +270,24 @@ func statusHint(code int) string {
 		return " (404 can mean a wrong auth_token, an unknown stream_path, or a wrong server_url)"
 	}
 	return ""
+}
+
+// warnOnBacklog logs (at most every 10s) when the queue of chunks waiting for upload
+// holds so much stream time that chunks are about to expire, which means the uplink is
+// slower than the stream bitrate.
+func (u *Uploader) warnOnBacklog() {
+	backlog := len(u.chunkChan)
+	queued := time.Duration(backlog*u.cfg.ChunkDuration) * time.Second
+	if backlog == 0 || u.maxChunkAge <= 0 || queued < u.maxChunkAge/2 {
+		return
+	}
+
+	u.backlogMu.Lock()
+	defer u.backlogMu.Unlock()
+	if time.Since(u.lastBacklogLog) < 10*time.Second {
+		return
+	}
+	u.lastBacklogLog = time.Now()
+	log.Printf("[Uploader %s] WARNING: %d chunks (~%v of stream) are waiting for upload; chunks older than %v are dropped. The uplink is slower than the stream bitrate: lower the encoder bitrate or raise concurrency.",
+		u.stream.StreamPath, backlog, queued, u.maxChunkAge)
 }

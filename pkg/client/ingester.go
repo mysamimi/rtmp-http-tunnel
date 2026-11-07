@@ -301,6 +301,12 @@ func (in *Ingester) scanPlaylist(ctx context.Context, playlistPath string, seqRe
 			time.Sleep(50 * time.Millisecond)
 
 			log.Printf("[Ingester %s] Detected new chunk: %s (HLS Seq: %d, Upload Seq: %d)", in.stream.StreamPath, line, hlsSeq, uploadSeq)
+			// Age is measured from when the segment was written, not from when it got
+			// queued, so chunks that waited behind a full queue still expire on time.
+			createdAt := time.Now()
+			if fi, err := os.Stat(filePath); err == nil {
+				createdAt = fi.ModTime()
+			}
 			select {
 			case <-ctx.Done():
 				return false
@@ -308,7 +314,7 @@ func (in *Ingester) scanPlaylist(ctx context.Context, playlistPath string, seqRe
 				Path:      filePath,
 				SeqNum:    uploadSeq,
 				Filename:  uploadFilename,
-				CreatedAt: time.Now(),
+				CreatedAt: createdAt,
 			}:
 			}
 			*lastQueuedSeq = hlsSeq

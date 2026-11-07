@@ -2,6 +2,8 @@ package server
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -94,5 +96,57 @@ func TestBufferPopSkipsMissingChunkQuicklyWhenLaterChunksExist(t *testing.T) {
 	}
 	if _, seq, err := buf.Pop(ctx); err != nil || seq != 2 {
 		t.Fatalf("Pop after skip = seq %d, err %v; want seq 2", seq, err)
+	}
+}
+
+func TestBufferEvictsOldestChunksAboveCap(t *testing.T) {
+	tempDir := t.TempDir()
+	buf := NewBuffer(&common.ServerConfig{BufferDuration: 4, ChunkDuration: 2, MaxBufferedChunks: 3}, tempDir)
+
+	paths := make([]string, 5)
+	for i := range paths {
+		paths[i] = filepath.Join(tempDir, fmt.Sprintf("chunk_%d.ts", i))
+		if err := os.WriteFile(paths[i], []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		buf.Add(int64(i), paths[i])
+	}
+
+	buf.mu.Lock()
+	defer buf.mu.Unlock()
+	if len(buf.chunks) != 3 {
+		t.Fatalf("buffered chunks = %d, want 3", len(buf.chunks))
+	}
+	for i := 0; i < 2; i++ {
+		if _, ok := buf.chunks[int64(i)]; ok {
+			t.Errorf("oldest chunk %d was kept", i)
+		}
+		if _, err := os.Stat(paths[i]); !os.IsNotExist(err) {
+			t.Errorf("evicted chunk file %d still on disk", i)
+		}
+	}
+}
+
+func TestBufferEvictionAdvancesPlaybackPosition(t *testing.T) {
+	tempDir := t.TempDir()
+	buf := NewBuffer(&common.ServerConfig{BufferDuration: 4, ChunkDuration: 2, MaxBufferedChunks: 2}, tempDir)
+	buf.Add(0, filepath.Join(tempDir, "chunk_0.ts"))
+	buf.Add(1, filepath.Join(tempDir, "chunk_1.ts"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := buf.WaitUntilReady(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Output is stalled: more chunks arrive, pushing 0 and 1 out.
+	buf.Add(2, filepath.Join(tempDir, "chunk_2.ts"))
+	buf.Add(3, filepath.Join(tempDir, "chunk_3.ts"))
+
+	start := time.Now()
+	if _, seq, err := buf.Pop(ctx); err != nil || seq != 2 {
+		t.Fatalf("Pop = seq %d, err %v; want seq 2 without waiting for dropped chunks", seq, err)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatal("Pop waited for chunks that were evicted")
 	}
 }

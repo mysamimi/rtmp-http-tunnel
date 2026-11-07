@@ -42,18 +42,21 @@ type ServerStreamConfig struct {
 }
 
 type ServerConfig struct {
-	ListenAddr             string               `json:"listen_addr"`
-	AuthToken              string               `json:"auth_token"`
-	ObfuscationKey         string               `json:"obfuscation_key"`
-	BufferDuration         int                  `json:"buffer_duration"`
-	RebufferDuration       int                  `json:"rebuffer_duration"`
-	ChunkDuration          int                  `json:"chunk_duration"`
-	InactiveSessionTimeout int                  `json:"inactive_session_timeout"` // seconds
-	TLSCertFile            string               `json:"tls_cert_file"`
-	TLSKeyFile             string               `json:"tls_key_file"`
-	UseDocker              bool                 `json:"use_docker"`
-	DockerImage            string               `json:"docker_image"`
-	Streams                []ServerStreamConfig `json:"streams"`
+	ListenAddr             string `json:"listen_addr"`
+	AuthToken              string `json:"auth_token"`
+	ObfuscationKey         string `json:"obfuscation_key"`
+	BufferDuration         int    `json:"buffer_duration"`
+	RebufferDuration       int    `json:"rebuffer_duration"`
+	ChunkDuration          int    `json:"chunk_duration"`
+	InactiveSessionTimeout int    `json:"inactive_session_timeout"` // seconds
+	// MaxBufferedChunks caps the chunks held on disk per stream. When the output
+	// stalls and the cap is hit, the oldest chunks are dropped. 0 = automatic.
+	MaxBufferedChunks int                  `json:"max_buffered_chunks"`
+	TLSCertFile       string               `json:"tls_cert_file"`
+	TLSKeyFile        string               `json:"tls_key_file"`
+	UseDocker         bool                 `json:"use_docker"`
+	DockerImage       string               `json:"docker_image"`
+	Streams           []ServerStreamConfig `json:"streams"`
 }
 
 type Config struct {
@@ -175,6 +178,14 @@ func validateServerConfig(cfg ServerConfig) error {
 	}
 	if cfg.RebufferDuration < 0 {
 		return fmt.Errorf("server.rebuffer_duration must not be negative")
+	}
+	if cfg.MaxBufferedChunks < 0 {
+		return fmt.Errorf("server.max_buffered_chunks must not be negative")
+	}
+	if cfg.MaxBufferedChunks > 0 {
+		if need := (cfg.BufferDuration + cfg.ChunkDuration - 1) / cfg.ChunkDuration; cfg.MaxBufferedChunks < need {
+			return fmt.Errorf("server.max_buffered_chunks (%d) must be at least buffer_duration/chunk_duration (%d), otherwise the buffer can never fill", cfg.MaxBufferedChunks, need)
+		}
 	}
 	if cfg.InactiveSessionTimeout <= 0 {
 		return fmt.Errorf("server.inactive_session_timeout must be greater than zero")

@@ -102,7 +102,8 @@ Copy `config.json.example` to `config.json` and adjust parameters:
 ### Key Parameters:
 - `"concurrency"`: Number of concurrent HTTP uploader workers per client stream.
 - `"max_upload_retries"`: Number of times client attempts uploading a chunk before skipping/discarding.
-- `"inactive_session_timeout"`: Server-side inactivity timeout (seconds). If no chunk uploads are received for a stream within this duration, the server terminates its streamer process and cleans up.
+- `"inactive_session_timeout"`: Server-side inactivity timeout (seconds). If no chunk uploads are received for a stream within this duration, the server terminates its streamer process and cleans up. It is never applied shorter than `buffer_duration + 4 * chunk_duration`, so a stream that is still playing out its buffer is not cut off (the server logs when it raises the value).
+- `"max_buffered_chunks"`: Optional cap on chunks kept on disk per stream (default: 3x the initial buffer, at least 30). If the output to YouTube stalls and the cap is reached, the oldest chunks are dropped. Must be at least `buffer_duration / chunk_duration` when set.
 - `"tls_pin_sha256"` (Client): Hex SHA-256 fingerprint of the server's (leaf) certificate. When set, only that exact certificate is accepted, which is the recommended way to use a self-signed certificate. Get it on the server with:
   ```bash
   openssl x509 -in fullchain.pem -noout -fingerprint -sha256
@@ -181,7 +182,8 @@ Once OBS starts streaming, the client segments, obfuscates, and relays the chunk
 ## Safety Limits
 
 - Upload requests are capped at 50 MB per chunk. Oversized chunks are rejected with HTTP `413` so corrupted/truncated media is not accepted silently.
-- The client discards chunks that are too old for the server buffer window. If the server health endpoint is unreachable, the client uses a conservative fallback window.
+- The client discards chunks that are too old for the server buffer window; age is measured from when FFmpeg wrote the segment. When the upload queue holds close to that much stream time, the client logs a warning that the uplink is slower than the stream bitrate (lower the encoder bitrate or raise `concurrency`).
+- The server keeps at most `max_buffered_chunks` chunks per stream on disk. If the server health endpoint is unreachable, the client uses a conservative fallback window.
 - The client verifies the server's TLS certificate by default. For a self-signed certificate set `tls_pin_sha256` (or `tls_ca_file`); `insecure_skip_verify` exists only as an explicit opt-out. Plain HTTP is supported but unencrypted, so use HTTPS for real deployments.
 - Requests with a missing or wrong `auth_token`, unknown paths and the global `/health` without a token all get the same plain `404 page not found` response, so the server does not advertise itself to probes. Consequently a `404` seen by the client can mean a wrong token, a wrong `stream_path` or a wrong `server_url`.
 
