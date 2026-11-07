@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"os"
-	"path/filepath"
 	"sync"
 
 	"github.com/mysamimi/rtmp-http-tunnel/pkg/common"
@@ -43,13 +42,8 @@ func runStream(ctx context.Context, cfg *common.ClientConfig, sc common.StreamCo
 		return
 	}
 
-	// Clean up any files in temp dir from previous runs
-	files, err := os.ReadDir(sc.TempDir)
-	if err == nil {
-		for _, f := range files {
-			_ = os.Remove(filepath.Join(sc.TempDir, f.Name()))
-		}
-	}
+	// Stale chunks are removed by the Ingester at startup; the upload sequence
+	// state file in this directory must survive client restarts.
 
 	// Channel for passing chunk jobs from Ingester to Uploader for this specific stream
 	chunkChan := make(chan ChunkJob, 100)

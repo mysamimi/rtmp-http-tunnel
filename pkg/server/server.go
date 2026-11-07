@@ -15,6 +15,7 @@ type StreamSession struct {
 	Buffer        *Buffer
 	Streamer      *Streamer
 	CancelFunc    context.CancelFunc
+	streamerGen   uint64 // identifies the current streamer goroutine; guarded by Mu
 	LastActivity  time.Time
 	Mu            sync.Mutex
 	Path          string
@@ -91,13 +92,18 @@ func (s *Server) StartSessionStreamer(ctx context.Context, session *StreamSessio
 	if session.CancelFunc == nil {
 		sessionCtx, cancel := context.WithCancel(ctx)
 		session.CancelFunc = cancel
+		session.streamerGen++
+		gen := session.streamerGen
 		go func() {
 			log.Printf("[Server] Starting streamer goroutine for stream path: %s", session.Path)
 			if err := session.Streamer.Start(sessionCtx); err != nil && err != context.Canceled {
 				log.Printf("[Server] Streamer for path %s exited with error: %v", session.Path, err)
 			}
 			session.Mu.Lock()
-			session.CancelFunc = nil
+			// Only clear our own CancelFunc: a newer streamer may already have replaced it.
+			if session.streamerGen == gen {
+				session.CancelFunc = nil
+			}
 			session.Mu.Unlock()
 		}()
 	}

@@ -105,11 +105,13 @@ func (s *Streamer) Start(ctx context.Context) error {
 
 		_ = cmd.Wait()
 
+		// Keep the buffered chunks in every case: a dropped connection to the
+		// target must not discard the jitter buffer, so streaming resumes
+		// from the next unsent chunk as soon as FFmpeg reconnects.
 		if errors.Is(streamErr, ErrBufferDrained) {
 			log.Printf("[Streamer] FFmpeg output process exited because buffer drained: %v. Waiting for quick rebuffer...", streamErr)
 		} else {
-			log.Printf("[Streamer] FFmpeg output process exited: %v. Resetting buffer and restarting streamer...", streamErr)
-			s.buffer.Reset() // Clear queue so we start clean next time
+			log.Printf("[Streamer] FFmpeg output process exited: %v. Reconnecting with buffered chunks preserved...", streamErr)
 		}
 
 		select {

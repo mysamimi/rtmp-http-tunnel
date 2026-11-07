@@ -95,3 +95,48 @@ func receiveChunkJob(t *testing.T, ch <-chan ChunkJob) ChunkJob {
 		return ChunkJob{}
 	}
 }
+
+func TestIngesterCleanupKeepsSequenceState(t *testing.T) {
+	tempDir := t.TempDir()
+	statePath := filepath.Join(tempDir, ".rtmp-http-tunnel-next-seq")
+	for name, content := range map[string]string{
+		".rtmp-http-tunnel-next-seq": "42",
+		"chunk_0.ts":                 "x",
+		"index.m3u8":                 "x",
+	} {
+		if err := os.WriteFile(filepath.Join(tempDir, name), []byte(content), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	ingester := NewIngester(&common.ClientConfig{}, common.StreamConfig{StreamPath: "s", TempDir: tempDir}, make(chan ChunkJob, 1))
+	ingester.cleanupTempDir()
+
+	if _, err := os.Stat(statePath); err != nil {
+		t.Fatalf("sequence state file removed by cleanup: %v", err)
+	}
+	for _, name := range []string{"chunk_0.ts", "index.m3u8"} {
+		if _, err := os.Stat(filepath.Join(tempDir, name)); !os.IsNotExist(err) {
+			t.Fatalf("%s should have been removed", name)
+		}
+	}
+}
+
+func TestRunStreamPreservesSequenceState(t *testing.T) {
+	tempDir := t.TempDir()
+	statePath := filepath.Join(tempDir, ".rtmp-http-tunnel-next-seq")
+	if err := os.WriteFile(statePath, []byte("42"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Cancelled context: runStream sets up the directory and returns without spawning FFmpeg.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	runStream(ctx, &common.ClientConfig{ChunkDuration: 2, ServerURL: "http://127.0.0.1:1"},
+		common.StreamConfig{StreamPath: "s", InputURL: "rtmp://0.0.0.0:1935", TempDir: tempDir})
+
+	data, err := os.ReadFile(statePath)
+	if err != nil || string(data) != "42" {
+		t.Fatalf("sequence state after runStream = %q, %v; want 42", data, err)
+	}
+}
