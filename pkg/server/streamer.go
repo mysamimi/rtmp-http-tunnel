@@ -39,11 +39,11 @@ func (s *Streamer) Start(ctx context.Context) error {
 		default:
 		}
 
-		log.Printf("[Streamer] Waiting for buffer before connecting output to: %s", s.targetRTMPURL)
+		log.Printf("[Streamer] Waiting for buffer before connecting output to: %s", common.MaskURL(s.targetRTMPURL))
 		if err := s.buffer.WaitUntilReady(ctx); err != nil {
 			return err
 		}
-		log.Printf("[Streamer] Starting FFmpeg restreamer output to: %s", s.targetRTMPURL)
+		log.Printf("[Streamer] Starting FFmpeg restreamer output to: %s", common.MaskURL(s.targetRTMPURL))
 
 		// Start FFmpeg to read from stdin (-) and output to RTMP.
 		var cmd *exec.Cmd
@@ -78,8 +78,10 @@ func (s *Streamer) Start(ctx context.Context) error {
 		}
 
 		// Optional: pipe ffmpeg output to server logs for debugging
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
+		// FFmpeg echoes the output URL (with the stream key) in its logs; mask it.
+		masked := common.NewMaskingWriter(os.Stderr, s.targetRTMPURL)
+		cmd.Stdout = masked
+		cmd.Stderr = masked
 
 		if err := cmd.Start(); err != nil {
 			log.Printf("[Streamer] Failed to start FFmpeg: %v. Is ffmpeg installed?", err)
@@ -100,6 +102,7 @@ func (s *Streamer) Start(ctx context.Context) error {
 		_ = cmd.Process.Kill()
 
 		_ = cmd.Wait()
+		_ = masked.Flush()
 		s.removeContainer()
 
 		// Keep the buffered chunks in every case: a dropped connection to the

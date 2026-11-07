@@ -108,6 +108,11 @@ func (u *Uploader) discoverBufferConfig(ctx context.Context) {
 		return
 	}
 
+	if chunkDur != u.cfg.ChunkDuration {
+		log.Printf("[Uploader %s] WARNING: client chunk_duration (%ds) differs from server chunk_duration (%ds); the server's buffer sizing assumes its own value. Use the same value on both sides.",
+			u.stream.StreamPath, u.cfg.ChunkDuration, chunkDur)
+	}
+
 	u.maxChunkAge = time.Duration(bufferDur-chunkDur) * time.Second
 	log.Printf("[Uploader %s] Successfully discovered buffer configuration from server: buffer_duration=%ds, chunk_duration=%ds. Calculated maxChunkAge: %v",
 		u.stream.StreamPath, bufferDur, chunkDur, u.maxChunkAge)

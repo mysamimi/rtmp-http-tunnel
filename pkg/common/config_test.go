@@ -112,3 +112,56 @@ func TestConfigValidateClientTLSPin(t *testing.T) {
 		t.Fatalf("Validate rejected openssl-style pin: %v", err)
 	}
 }
+
+func TestConfigValidateRejectsSharedTempDir(t *testing.T) {
+	cfg := validConfig()
+	cfg.Client.Streams = append(cfg.Client.Streams, StreamConfig{
+		StreamPath: "stream_2", InputURL: "rtmp://0.0.0.0:1936", TempDir: "tmp_client/../tmp_client/stream_1",
+	})
+	if err := cfg.Validate("client"); err == nil {
+		t.Fatal("Validate accepted two client streams sharing a temp_dir")
+	}
+
+	cfg = validConfig()
+	cfg.Server.Streams = append(cfg.Server.Streams, ServerStreamConfig{
+		Path: "stream_2", TargetRTMPURL: "rtmp://a/b", TempDir: "./tmp_server/stream_1/",
+	})
+	if err := cfg.Validate("server"); err == nil {
+		t.Fatal("Validate accepted two server streams sharing a temp_dir")
+	}
+}
+
+func TestConfigValidateRejectsDuplicateListenerPort(t *testing.T) {
+	cfg := validConfig()
+	add := func(input string) error {
+		c := *cfg
+		c.Client.Streams = append(append([]StreamConfig{}, cfg.Client.Streams...), StreamConfig{
+			StreamPath: "stream_2", InputURL: input, TempDir: "./tmp_client/stream_2",
+		})
+		return c.Validate("client")
+	}
+
+	if err := add("rtmp://0.0.0.0:1935"); err == nil {
+		t.Fatal("Validate accepted two listeners on tcp 1935")
+	}
+	// Same port number, different protocol, and pull inputs do not conflict.
+	if err := add("srt://0.0.0.0:1935"); err != nil {
+		t.Fatalf("Validate rejected udp listener on a tcp-used port: %v", err)
+	}
+	if err := add("rtmp://192.168.1.5:1935/live"); err != nil {
+		t.Fatalf("Validate rejected a pull input: %v", err)
+	}
+}
+
+func TestConfigValidateRejectsNegativeClientCounts(t *testing.T) {
+	cfg := validConfig()
+	cfg.Client.Concurrency = -1
+	if err := cfg.Validate("client"); err == nil {
+		t.Fatal("Validate accepted negative concurrency")
+	}
+	cfg = validConfig()
+	cfg.Client.MaxUploadRetries = -1
+	if err := cfg.Validate("client"); err == nil {
+		t.Fatal("Validate accepted negative max_upload_retries")
+	}
+}

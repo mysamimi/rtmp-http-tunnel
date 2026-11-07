@@ -143,6 +143,9 @@ Validation checks include:
 - `auth_token`, `obfuscation_key`, stream paths, input URLs, target URLs, and temp directories must be present.
 - Stream paths may contain only letters, numbers, `.`, `_`, and `-`; slashes are not allowed because paths are used in `/s/{stream_path}/...` routes.
 - Stream paths must be unique within the selected client or server configuration.
+- Every stream needs its own `temp_dir` (shared directories would overwrite each other's chunks and sequence state), and client listener inputs must not reuse the same port/protocol.
+- `tls_pin_sha256`, if set, must be a 64 character hex SHA-256 fingerprint (the placeholder in `config.json.example` must be replaced or removed).
+- `concurrency` and `max_upload_retries` must not be negative.
 - TLS certificate and key paths must be configured together.
 
 ---
@@ -196,6 +199,9 @@ The server certificate is verified by default. Set `tls_pin_sha256` to the serve
 If the server logs:
 `[Receiver] WARNING: Decrypted chunk does not start with MPEG-TS sync byte (0x47, 'G')...`
 It means the server was unable to decrypt the incoming chunk. Double-check that `"obfuscation_key"` is identical in both the client and server configuration.
+
+### Logs and Stream Keys
+The server masks stream keys (`rtmp://a.rtmp.youtube.com/live2/ab***`) in its own logs and in FFmpeg's output. The full URL is still part of the FFmpeg command line (visible in `ps` or `docker inspect` to local users) and of `config.json`, so keep the config file readable only by the service user (`chmod 600 config.json`).
 
 ### Port Conflicts
 If you receive a `port is already allocated` or `bind: address already in use` error:

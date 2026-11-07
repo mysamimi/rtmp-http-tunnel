@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -114,7 +115,16 @@ func validateClientConfig(cfg ClientConfig) error {
 		return fmt.Errorf("client.streams must contain at least one stream")
 	}
 
+	if cfg.Concurrency < 0 {
+		return fmt.Errorf("client.concurrency must not be negative")
+	}
+	if cfg.MaxUploadRetries < 0 {
+		return fmt.Errorf("client.max_upload_retries must not be negative")
+	}
+
 	seen := make(map[string]struct{}, len(cfg.Streams))
+	tempDirs := make(map[string]string, len(cfg.Streams))
+	listeners := make(map[string]string, len(cfg.Streams))
 	for i, stream := range cfg.Streams {
 		prefix := fmt.Sprintf("client.streams[%d]", i)
 		if err := validateStreamPath(prefix+".stream_path", stream.StreamPath); err != nil {
@@ -132,6 +142,15 @@ func validateClientConfig(cfg ClientConfig) error {
 		}
 		if err := requireNonEmpty(prefix+".temp_dir", stream.TempDir); err != nil {
 			return err
+		}
+		if err := claimTempDir(tempDirs, prefix, stream.StreamPath, stream.TempDir); err != nil {
+			return err
+		}
+		if key, ok := listenerKey(stream.InputURL); ok {
+			if other, dup := listeners[key]; dup {
+				return fmt.Errorf("%s.input_url listens on %s, which is already used by stream %q", prefix, key, other)
+			}
+			listeners[key] = stream.StreamPath
 		}
 	}
 
@@ -168,6 +187,7 @@ func validateServerConfig(cfg ServerConfig) error {
 	}
 
 	seen := make(map[string]struct{}, len(cfg.Streams))
+	tempDirs := make(map[string]string, len(cfg.Streams))
 	for i, stream := range cfg.Streams {
 		prefix := fmt.Sprintf("server.streams[%d]", i)
 		if err := validateStreamPath(prefix+".path", stream.Path); err != nil {
@@ -183,9 +203,49 @@ func validateServerConfig(cfg ServerConfig) error {
 		if err := requireNonEmpty(prefix+".temp_dir", stream.TempDir); err != nil {
 			return err
 		}
+		if err := claimTempDir(tempDirs, prefix, stream.Path, stream.TempDir); err != nil {
+			return err
+		}
 	}
 
 	return nil
+}
+
+// claimTempDir records dir as used by owner. Streams must not share a temp directory:
+// they would overwrite each other's chunks, playlist and sequence state, and a
+// startup cleanup of one would delete the other's files.
+func claimTempDir(used map[string]string, prefix, owner, dir string) error {
+	key := filepath.Clean(dir)
+	if abs, err := filepath.Abs(key); err == nil {
+		key = abs
+	}
+	if other, ok := used[key]; ok {
+		return fmt.Errorf("%s.temp_dir %q is already used by stream %q; every stream needs its own directory", prefix, dir, other)
+	}
+	used[key] = owner
+	return nil
+}
+
+// listenerKey returns "port/protocol" if the input URL makes the client listen
+// (a zero host on rtmp/srt/udp), so duplicate ports can be detected.
+func listenerKey(rawURL string) (string, bool) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", false
+	}
+	scheme := strings.ToLower(u.Scheme)
+	if scheme == "http" || scheme == "https" {
+		return "", false
+	}
+	host := strings.TrimSuffix(strings.TrimPrefix(strings.ToLower(u.Hostname()), "["), "]")
+	if host != "0" && host != "0.0.0.0" && host != "::" && host != "0::0" {
+		return "", false
+	}
+	proto := "tcp"
+	if scheme == "srt" || scheme == "udp" {
+		proto = "udp"
+	}
+	return u.Port() + "/" + proto, true
 }
 
 func requireNonEmpty(name, value string) error {
