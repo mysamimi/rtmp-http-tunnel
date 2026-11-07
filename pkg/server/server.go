@@ -52,6 +52,7 @@ func (s *Server) Start(ctx context.Context) error {
 		// Create buffer and streamer for this session
 		buf := NewBuffer(s.cfg, streamCfg.TempDir)
 		str := NewStreamer(s.cfg, streamCfg.TargetRTMPURL, buf)
+		str.ContainerName = "rtmp-http-tunnel-server-" + streamCfg.Path
 
 		session := &StreamSession{
 			Buffer:        buf,

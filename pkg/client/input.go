@@ -11,7 +11,18 @@ type InputSpec struct {
 	IsListener     bool   // Whether FFmpeg should listen
 	FFmpegInputURL string // URL passed to -i
 	ListenPort     string // Port for Docker port mapping (only in listen mode)
-	DockerInputURL string // Docker-ized URL version (127.0.0.1/localhost -> 0.0.0.0)
+	DockerInputURL string // Docker-ized URL version (127.0.0.1/localhost -> host.docker.internal)
+	Protocol       string // Transport of the listening port: "tcp" or "udp"
+	NeedsHostAlias bool   // DockerInputURL points at host.docker.internal, which needs --add-host
+}
+
+// DockerHostAlias is the name under which a container reaches services on the Docker host.
+const DockerHostAlias = "host.docker.internal"
+
+// PublishArg returns the value for docker's -p flag that exposes the listener port
+// with the right transport (SRT and UDP are UDP; a bare port would map TCP only).
+func (s InputSpec) PublishArg() string {
+	return fmt.Sprintf("%s:%s/%s", s.ListenPort, s.ListenPort, s.Protocol)
 }
 
 func isZeroHost(host string) bool {
@@ -49,6 +60,10 @@ func ParseInputURL(rawURL string) (InputSpec, error) {
 	spec := InputSpec{
 		IsListener: isListen,
 		ListenPort: port,
+		Protocol:   "tcp",
+	}
+	if scheme == "srt" || scheme == "udp" {
+		spec.Protocol = "udp"
 	}
 
 	// Construct FFmpegInputURL
@@ -84,16 +99,17 @@ func ParseInputURL(rawURL string) (InputSpec, error) {
 	}
 	spec.FFmpegInputURL = ffmpegURL
 
-	// Construct DockerInputURL by replacing 127.0.0.1 and localhost with 0.0.0.0
-	spec.DockerInputURL = dockerizeURL(ffmpegURL)
+	// Inside a container 127.0.0.1 is the container itself, so a pull from a service on
+	// the host has to go through the host alias instead.
+	spec.DockerInputURL, spec.NeedsHostAlias = dockerizeURL(ffmpegURL)
 
 	return spec, nil
 }
 
-func dockerizeURL(rawURL string) string {
+func dockerizeURL(rawURL string) (string, bool) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return rawURL
+		return rawURL, false
 	}
 	hostName, port, err := net.SplitHostPort(u.Host)
 	if err != nil {
@@ -102,11 +118,11 @@ func dockerizeURL(rawURL string) string {
 	}
 	if hostName == "127.0.0.1" || hostName == "localhost" {
 		if port != "" {
-			u.Host = "0.0.0.0:" + port
+			u.Host = DockerHostAlias + ":" + port
 		} else {
-			u.Host = "0.0.0.0"
+			u.Host = DockerHostAlias
 		}
-		return u.String()
+		return u.String(), true
 	}
-	return rawURL
+	return rawURL, false
 }

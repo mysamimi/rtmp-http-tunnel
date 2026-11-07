@@ -17,6 +17,9 @@ type Streamer struct {
 	cfg           *common.ServerConfig
 	targetRTMPURL string
 	buffer        *Buffer
+	// ContainerName names the Docker container so it can be removed explicitly:
+	// killing the docker CLI process does not stop the container it started.
+	ContainerName string
 }
 
 func NewStreamer(cfg *common.ServerConfig, targetRTMPURL string, buffer *Buffer) *Streamer {
@@ -49,17 +52,9 @@ func (s *Streamer) Start(ctx context.Context) error {
 			if image == "" {
 				image = "linuxserver/ffmpeg"
 			}
-			cmd = exec.CommandContext(ctx, "docker", "run", "--rm", "-i",
-				image,
-				"-loglevel", "info",
-				"-nostdin",
-				"-re",
-				"-f", "mpegts",
-				"-i", "-",
-				"-c", "copy",
-				"-f", "flv",
-				s.targetRTMPURL,
-			)
+			// Make sure no earlier container still holds the target connection.
+			s.removeContainer()
+			cmd = exec.CommandContext(ctx, "docker", s.dockerRunArgs(image)...)
 			log.Printf("[Streamer] Running FFmpeg in Docker (%s)...", image)
 		} else {
 			cmd = exec.CommandContext(ctx, "ffmpeg",
@@ -100,10 +95,12 @@ func (s *Streamer) Start(ctx context.Context) error {
 		// If feedChunks exits, we close the stdin pipe and wait for FFmpeg to finish
 		_ = stdinPipe.Close()
 
-		// Kill the process if it's still running
+		// Kill the process if it's still running (for Docker this only kills the CLI;
+		// the container itself is removed below)
 		_ = cmd.Process.Kill()
 
 		_ = cmd.Wait()
+		s.removeContainer()
 
 		// Keep the buffered chunks in every case: a dropped connection to the
 		// target must not discard the jitter buffer, so streaming resumes
@@ -161,4 +158,31 @@ func (s *Streamer) feedChunks(ctx context.Context, writer io.WriteCloser) error 
 
 		log.Printf("[Streamer] Wrote chunk Seq %d to FFmpeg", seq)
 	}
+}
+
+// dockerRunArgs builds the arguments of `docker run` for the restreaming FFmpeg.
+func (s *Streamer) dockerRunArgs(image string) []string {
+	args := []string{"run", "--rm", "-i"}
+	if s.ContainerName != "" {
+		args = append(args, "--name", s.ContainerName)
+	}
+	return append(args,
+		image,
+		"-loglevel", "info",
+		"-nostdin",
+		"-re",
+		"-f", "mpegts",
+		"-i", "-",
+		"-c", "copy",
+		"-f", "flv",
+		s.targetRTMPURL,
+	)
+}
+
+// removeContainer force-removes the named container, ignoring "no such container".
+func (s *Streamer) removeContainer() {
+	if !s.cfg.UseDocker || s.ContainerName == "" {
+		return
+	}
+	_ = exec.Command("docker", "rm", "-f", s.ContainerName).Run()
 }

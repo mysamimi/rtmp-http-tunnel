@@ -124,6 +124,9 @@ Copy `config.json.example` to `config.json` and adjust parameters:
     - UDP (Listener): `udp://0.0.0.0:1234` (auto-appends `?listen`)
     - UDP (Multicast Pull): `udp://239.1.1.1:1234`
     - HTTP/HLS: `http://example.com/stream.m3u8`
+    - Listener URLs (`0.0.0.0`) accept connections on **all network interfaces** with no authentication, so anyone who can reach that port can publish into your stream. Restrict it with a firewall to the machine running your encoder (with Docker, the port is also published on all host interfaces).
+    - `127.0.0.1` / `localhost` means *pull from a service on this machine*. With Docker the client rewrites it to `host.docker.internal` (added to the container automatically) because `127.0.0.1` inside a container is the container itself.
+    - Listener ports are published with the right protocol: RTMP/HTTP as TCP, SRT/UDP as UDP.
   - `"temp_dir"`: Path for localized chunking assets.
 - `"streams"` (Server): Array of static registered path definitions.
   - `"path"`: Expected URL route identifier.

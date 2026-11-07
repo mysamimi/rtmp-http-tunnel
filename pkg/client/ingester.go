@@ -126,7 +126,10 @@ func (in *Ingester) Start(ctx context.Context) error {
 				"--name", containerName,
 			}
 			if spec.IsListener && spec.ListenPort != "" {
-				dockerArgs = append(dockerArgs, "-p", fmt.Sprintf("%s:%s", spec.ListenPort, spec.ListenPort))
+				dockerArgs = append(dockerArgs, "-p", spec.PublishArg())
+			}
+			if spec.NeedsHostAlias {
+				dockerArgs = append(dockerArgs, "--add-host", DockerHostAlias+":host-gateway")
 			}
 			dockerArgs = append(dockerArgs,
 				"-v", fmt.Sprintf("%s:/tmp_client", absTempDir),

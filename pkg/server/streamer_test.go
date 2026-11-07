@@ -83,3 +83,23 @@ func TestStartSessionStreamerStaleExitDoesNotClearNewStreamer(t *testing.T) {
 		t.Fatal("stale streamer exit cleared the CancelFunc of the newer streamer")
 	}
 }
+
+func TestStreamerDockerArgsNameContainer(t *testing.T) {
+	buf := NewBuffer(&common.ServerConfig{BufferDuration: 10, ChunkDuration: 2}, t.TempDir())
+	str := NewStreamer(&common.ServerConfig{UseDocker: true}, "rtmp://target/key", buf)
+	str.ContainerName = "rtmp-http-tunnel-server-p"
+
+	args := str.dockerRunArgs("img")
+	found := false
+	for i, a := range args {
+		if a == "--name" && i+1 < len(args) && args[i+1] == "rtmp-http-tunnel-server-p" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("docker args %v do not name the container", args)
+	}
+	if args[len(args)-1] != "rtmp://target/key" {
+		t.Fatalf("target URL must be the last argument, got %v", args)
+	}
+}

@@ -1,18 +1,19 @@
 package client
 
 import (
+	"strings"
 	"testing"
 )
 
 func TestParseInputURL(t *testing.T) {
 	tests := []struct {
-		name           string
-		rawURL         string
-		wantListen     bool
-		wantPort       string
-		wantFFmpegURL  string
-		wantDockerURL  string
-		expectError    bool
+		name          string
+		rawURL        string
+		wantListen    bool
+		wantPort      string
+		wantFFmpegURL string
+		wantDockerURL string
+		expectError   bool
 	}{
 		{
 			name:          "rtmp listener",
@@ -92,7 +93,7 @@ func TestParseInputURL(t *testing.T) {
 			wantListen:    false,
 			wantPort:      "1935",
 			wantFFmpegURL: "rtmp://localhost:1935/live/app",
-			wantDockerURL: "rtmp://0.0.0.0:1935/live/app",
+			wantDockerURL: "rtmp://host.docker.internal:1935/live/app",
 			expectError:   false,
 		},
 		{
@@ -101,7 +102,7 @@ func TestParseInputURL(t *testing.T) {
 			wantListen:    false,
 			wantPort:      "1935",
 			wantFFmpegURL: "rtmp://127.0.0.1:1935/live/app",
-			wantDockerURL: "rtmp://0.0.0.0:1935/live/app",
+			wantDockerURL: "rtmp://host.docker.internal:1935/live/app",
 			expectError:   false,
 		},
 	}
@@ -124,6 +125,9 @@ func TestParseInputURL(t *testing.T) {
 			if spec.FFmpegInputURL != tt.wantFFmpegURL {
 				t.Errorf("FFmpegInputURL = %q, want %q", spec.FFmpegInputURL, tt.wantFFmpegURL)
 			}
+			if wantAlias := strings.Contains(tt.wantDockerURL, DockerHostAlias); spec.NeedsHostAlias != wantAlias {
+				t.Errorf("NeedsHostAlias = %v, want %v", spec.NeedsHostAlias, wantAlias)
+			}
 			if spec.DockerInputURL != tt.wantDockerURL {
 				t.Errorf("DockerInputURL = %q, want %q", spec.DockerInputURL, tt.wantDockerURL)
 			}
@@ -143,6 +147,23 @@ func TestIsZeroHost(t *testing.T) {
 	for _, nz := range nonZeros {
 		if isZeroHost(nz) {
 			t.Errorf("expected %q to NOT be classified as zero host", nz)
+		}
+	}
+}
+
+func TestPublishArgUsesCorrectProtocol(t *testing.T) {
+	tests := map[string]string{
+		"rtmp://0.0.0.0:1935": "1935:1935/tcp",
+		"srt://0.0.0.0:9000":  "9000:9000/udp",
+		"udp://0.0.0.0:1234":  "1234:1234/udp",
+	}
+	for raw, want := range tests {
+		spec, err := ParseInputURL(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := spec.PublishArg(); got != want {
+			t.Errorf("PublishArg(%s) = %q, want %q", raw, got, want)
 		}
 	}
 }
