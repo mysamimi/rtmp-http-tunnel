@@ -1,10 +1,13 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -194,5 +197,20 @@ func TestBufferPopWakesWhenChunkArrives(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 600*time.Millisecond {
 		t.Fatalf("Pop took %v to notice the new chunk", elapsed)
+	}
+}
+
+func TestBufferLogsProgressWhileFilling(t *testing.T) {
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	defer log.SetOutput(os.Stderr)
+
+	tempDir := t.TempDir()
+	buf := NewBuffer(&common.ServerConfig{BufferDuration: 6, ChunkDuration: 2}, tempDir)
+	buf.Add(0, filepath.Join(tempDir, "chunk_0.ts"))
+	buf.Add(1, filepath.Join(tempDir, "chunk_1.ts"))
+
+	if out := logged.String(); !strings.Contains(out, "Buffering before output starts: 1/3 chunks") || !strings.Contains(out, "2/3 chunks") {
+		t.Fatalf("buffer progress not logged:\n%s", out)
 	}
 }

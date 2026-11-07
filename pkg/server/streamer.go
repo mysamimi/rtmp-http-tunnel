@@ -90,6 +90,7 @@ func (s *Streamer) Start(ctx context.Context) error {
 		}
 
 		log.Println("[Streamer] FFmpeg output process started, feeding buffered chunks...")
+		startedAt := time.Now()
 
 		// Feed chunks loop
 		streamErr := s.feedChunks(ctx, stdinPipe)
@@ -104,6 +105,11 @@ func (s *Streamer) Start(ctx context.Context) error {
 		_ = cmd.Wait()
 		_ = masked.Flush()
 		s.removeContainer()
+
+		if ran := time.Since(startedAt); ran < 10*time.Second && !errors.Is(streamErr, context.Canceled) && !errors.Is(streamErr, ErrBufferDrained) {
+			log.Printf("[Streamer] WARNING: FFmpeg stopped %.0fs after starting. The target (%s) probably refused the connection: check the stream key and URL, that the broadcast is enabled for live streaming, and the FFmpeg messages above.",
+				ran.Seconds(), common.MaskURL(s.targetRTMPURL))
+		}
 
 		// Keep the buffered chunks in every case: a dropped connection to the
 		// target must not discard the jitter buffer, so streaming resumes

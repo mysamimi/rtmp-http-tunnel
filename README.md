@@ -34,6 +34,8 @@ The remote server buffers these segments (e.g., for 60 seconds) to absorb packet
 
 ---
 
+> Setting up a VPS? See [docs/DEPLOY.md](docs/DEPLOY.md) for a step-by-step server install (FFmpeg, TLS pinning, systemd, firewall) and what the logs should show.
+
 ## Requirements
 - **Go** (1.20 or later)
 - **Option A (Recommended):** **Docker** running on both Client and Server machines (the app will manage `linuxserver/ffmpeg` containers automatically).

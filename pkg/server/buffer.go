@@ -57,7 +57,12 @@ func (b *Buffer) Add(seqNum int64, filePath string) {
 	}
 
 	b.chunks[seqNum] = filePath
-	log.Printf("[Buffer] Added chunk %d (Total buffered chunks: %d)", seqNum, len(b.chunks))
+	if b.hasStarted {
+		log.Printf("[Buffer] Added chunk %d (Total buffered chunks: %d)", seqNum, len(b.chunks))
+	} else {
+		required := b.requiredChunks(b.hasEverStarted)
+		log.Printf("[Buffer] Buffering before output starts: %d/%d chunks (nothing is sent to the target until the buffer is full)", len(b.chunks), required)
+	}
 	b.evictOverflowLocked()
 	b.signal()
 }
