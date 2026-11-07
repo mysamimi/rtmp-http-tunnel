@@ -57,18 +57,21 @@ func (b *Buffer) Pop(ctx context.Context) (string, int64, error) {
 		return "", 0, err
 	}
 
-	b.mu.Lock()
-
 	// Retrieve the next sequence chunk.
-	// We wait up to 4 times the chunk duration before skipping to prevent permanent freeze
+	// We wait up to 4 times the chunk duration before skipping to prevent permanent freeze.
+	// When later chunks are already buffered the missing one is most likely lost
+	// (e.g. dropped by the client), so we only give it about one chunk duration.
 	waitTimeout := time.Duration(b.cfg.ChunkDuration*4) * time.Second
 	if waitTimeout < 4*time.Second {
 		waitTimeout = 8 * time.Second
 	}
+	laterTimeout := time.Duration(b.cfg.ChunkDuration) * time.Second
+	if laterTimeout < time.Second {
+		laterTimeout = time.Second
+	}
 
-	timer := time.NewTimer(waitTimeout)
-	defer timer.Stop()
-
+	start := time.Now()
+	b.mu.Lock()
 	for {
 		filePath, exists := b.chunks[b.nextSeq]
 		if exists {
@@ -79,17 +82,16 @@ func (b *Buffer) Pop(ctx context.Context) (string, int64, error) {
 			return filePath, currentSeq, nil
 		}
 
-		b.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return "", 0, ctx.Err()
-		case <-timer.C:
-			b.mu.Lock()
+		limit := waitTimeout
+		if b.hasLaterChunkLocked() {
+			limit = laterTimeout
+		}
+		if time.Since(start) >= limit {
 			log.Printf("[Buffer] WARNING: Timeout waiting for chunk Seq %d. Skipping to keep stream alive...", b.nextSeq)
 			skippedSeq := b.nextSeq
 			b.nextSeq++
 
-			// If buffer is completely empty, resethasStarted to force re-buffering
+			// If buffer is completely empty, reset hasStarted to force re-buffering
 			if len(b.chunks) == 0 {
 				log.Println("[Buffer] Buffer completely drained. Pausing stream to re-buffer...")
 				b.hasStarted = false
@@ -99,11 +101,37 @@ func (b *Buffer) Pop(ctx context.Context) (string, int64, error) {
 
 			b.mu.Unlock()
 			return "", skippedSeq, fmt.Errorf("timeout waiting for sequence %d", skippedSeq)
-		default:
-			time.Sleep(100 * time.Millisecond)
+		}
+
+		b.mu.Unlock()
+		select {
+		case <-ctx.Done():
+			return "", 0, ctx.Err()
+		case <-time.After(100 * time.Millisecond):
 		}
 		b.mu.Lock()
 	}
+}
+
+func (b *Buffer) hasLaterChunkLocked() bool {
+	for seq := range b.chunks {
+		if seq > b.nextSeq {
+			return true
+		}
+	}
+	return false
+}
+
+// ShouldAccept reports whether a chunk with this sequence number is still useful:
+// it is neither already buffered nor older than the playback position.
+func (b *Buffer) ShouldAccept(seqNum int64) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.hasStarted && seqNum < b.nextSeq {
+		return false
+	}
+	_, dup := b.chunks[seqNum]
+	return !dup
 }
 
 // WaitUntilReady blocks until enough chunks are buffered to start or restart FFmpeg.
@@ -209,7 +237,7 @@ func (b *Buffer) Reset() {
 		files, err := os.ReadDir(b.tempDir)
 		if err == nil {
 			for _, f := range files {
-				if strings.HasSuffix(f.Name(), ".ts") {
+				if strings.HasSuffix(f.Name(), ".ts") || strings.HasSuffix(f.Name(), ".part") {
 					_ = os.Remove(filepath.Join(b.tempDir, f.Name()))
 				}
 			}

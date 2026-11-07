@@ -91,6 +91,10 @@ func (in *Ingester) Start(ctx context.Context) error {
 	var wg sync.WaitGroup
 	defer wg.Wait()
 
+	// Segment names carry a per-run prefix so chunks still waiting for upload are
+	// never overwritten when FFmpeg restarts and begins numbering from zero again.
+	var runID int
+
 	isRTMP := strings.HasPrefix(strings.ToLower(in.stream.InputURL), "rtmp:") || strings.HasPrefix(strings.ToLower(in.stream.InputURL), "rtmps:")
 
 	for {
@@ -99,6 +103,9 @@ func (in *Ingester) Start(ctx context.Context) error {
 			return ctx.Err()
 		default:
 		}
+
+		runID++
+		segPrefix := fmt.Sprintf("r%d_", runID)
 
 		var cmd *exec.Cmd
 		if in.cfg.UseDocker {
@@ -135,7 +142,7 @@ func (in *Ingester) Start(ctx context.Context) error {
 				"-f", "hls",
 				"-hls_time", strconv.Itoa(in.cfg.ChunkDuration),
 				"-hls_list_size", "9999999",
-				"-hls_segment_filename", "/tmp_client/chunk_%d.ts",
+				"-hls_segment_filename", "/tmp_client/"+segPrefix+"chunk_%d.ts",
 				"/tmp_client/index.m3u8",
 			)
 
@@ -154,7 +161,7 @@ func (in *Ingester) Start(ctx context.Context) error {
 				"-f", "hls",
 				"-hls_time", strconv.Itoa(in.cfg.ChunkDuration),
 				"-hls_list_size", "9999999",
-				"-hls_segment_filename", filepath.Join(in.stream.TempDir, "chunk_%d.ts"),
+				"-hls_segment_filename", filepath.Join(in.stream.TempDir, segPrefix+"chunk_%d.ts"),
 				playlistPath,
 			)
 
@@ -199,18 +206,27 @@ func (in *Ingester) Start(ctx context.Context) error {
 
 		// Start monitoring the index.m3u8 playlist file while FFmpeg runs
 		monitorCtx, monitorCancel := context.WithCancel(ctx)
+		drain := make(chan struct{})
+		monitorDone := make(chan struct{})
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			in.monitorPlaylist(monitorCtx, playlistPath, seqRegexp)
+			defer close(monitorDone)
+			in.monitorPlaylistDrain(monitorCtx, drain, playlistPath, seqRegexp)
 		}()
 
 		// Wait for FFmpeg to exit (meaning OBS stopped streaming or client disconnected)
 		err = cmd.Wait()
+
+		// FFmpeg finalizes the last segment on exit: let the monitor queue it before stopping.
+		close(drain)
+		<-monitorDone
 		monitorCancel()
 
 		log.Printf("[Ingester %s] FFmpeg process exited: %v. Restarting...", in.stream.StreamPath, err)
-		in.cleanupTempDir() // Clean up for the next session
+		// Only drop the playlist: chunk files still queued for upload are removed by
+		// the uploader once sent or expired.
+		_ = os.Remove(playlistPath)
 
 		select {
 		case <-ctx.Done():
@@ -222,6 +238,12 @@ func (in *Ingester) Start(ctx context.Context) error {
 
 // monitorPlaylist polls index.m3u8 for new chunks
 func (in *Ingester) monitorPlaylist(ctx context.Context, playlistPath string, seqRegexp *regexp.Regexp) {
+	in.monitorPlaylistDrain(ctx, nil, playlistPath, seqRegexp)
+}
+
+// monitorPlaylistDrain is monitorPlaylist with an extra signal: when drain is closed
+// the playlist is scanned one last time (to pick up the final segment) before returning.
+func (in *Ingester) monitorPlaylistDrain(ctx context.Context, drain <-chan struct{}, playlistPath string, seqRegexp *regexp.Regexp) {
 	ticker := time.NewTicker(300 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -231,58 +253,65 @@ func (in *Ingester) monitorPlaylist(ctx context.Context, playlistPath string, se
 		select {
 		case <-ctx.Done():
 			return
+		case <-drain:
+			in.scanPlaylist(ctx, playlistPath, seqRegexp, &lastQueuedSeq)
+			return
 		case <-ticker.C:
-			if _, err := os.Stat(playlistPath); os.IsNotExist(err) {
-				continue
-			}
-
-			content, err := os.ReadFile(playlistPath)
-			if err != nil {
-				continue
-			}
-
-			lines := strings.Split(string(content), "\n")
-			for _, line := range lines {
-				line = strings.TrimSpace(line)
-				if line == "" || strings.HasPrefix(line, "#") {
-					continue
-				}
-
-				// The line represents the filename, e.g. chunk_0.ts
-				matches := seqRegexp.FindStringSubmatch(line)
-				if len(matches) != 2 {
-					continue
-				}
-
-				hlsSeq, err := strconv.ParseInt(matches[1], 10, 64)
-				if err != nil {
-					continue
-				}
-
-				if hlsSeq > lastQueuedSeq {
-					filePath := filepath.Join(in.stream.TempDir, line)
-					uploadSeq := in.nextSequence()
-					uploadFilename := fmt.Sprintf("chunk_%d.ts", uploadSeq)
-
-					// Small delay to ensure OS has finished syncing the file contents
-					time.Sleep(50 * time.Millisecond)
-
-					log.Printf("[Ingester %s] Detected new chunk: %s (HLS Seq: %d, Upload Seq: %d)", in.stream.StreamPath, line, hlsSeq, uploadSeq)
-					select {
-					case <-ctx.Done():
-						return
-					case in.chunkChan <- ChunkJob{
-						Path:      filePath,
-						SeqNum:    uploadSeq,
-						Filename:  uploadFilename,
-						CreatedAt: time.Now(),
-					}:
-					}
-					lastQueuedSeq = hlsSeq
-				}
+			if !in.scanPlaylist(ctx, playlistPath, seqRegexp, &lastQueuedSeq) {
+				return
 			}
 		}
 	}
+}
+
+// scanPlaylist queues every chunk listed in the playlist that has not been queued yet.
+// It returns false when ctx was cancelled.
+func (in *Ingester) scanPlaylist(ctx context.Context, playlistPath string, seqRegexp *regexp.Regexp, lastQueuedSeq *int64) bool {
+	content, err := os.ReadFile(playlistPath)
+	if err != nil {
+		return true
+	}
+
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		// The line represents the filename, e.g. r1_chunk_0.ts
+		matches := seqRegexp.FindStringSubmatch(line)
+		if len(matches) != 2 {
+			continue
+		}
+
+		hlsSeq, err := strconv.ParseInt(matches[1], 10, 64)
+		if err != nil {
+			continue
+		}
+
+		if hlsSeq > *lastQueuedSeq {
+			filePath := filepath.Join(in.stream.TempDir, line)
+			uploadSeq := in.nextSequence()
+			uploadFilename := fmt.Sprintf("chunk_%d.ts", uploadSeq)
+
+			// Small delay to ensure OS has finished syncing the file contents
+			time.Sleep(50 * time.Millisecond)
+
+			log.Printf("[Ingester %s] Detected new chunk: %s (HLS Seq: %d, Upload Seq: %d)", in.stream.StreamPath, line, hlsSeq, uploadSeq)
+			select {
+			case <-ctx.Done():
+				return false
+			case in.chunkChan <- ChunkJob{
+				Path:      filePath,
+				SeqNum:    uploadSeq,
+				Filename:  uploadFilename,
+				CreatedAt: time.Now(),
+			}:
+			}
+			*lastQueuedSeq = hlsSeq
+		}
+	}
+	return true
 }
 
 func (in *Ingester) nextSequence() int64 {

@@ -131,25 +131,21 @@ func (r *Receiver) handleHealth(w http.ResponseWriter, req *http.Request, sessio
 func (r *Receiver) handleUpload(w http.ResponseWriter, req *http.Request, session *StreamSession) {
 	// 1. Extract Metadata Headers
 	seqStr := req.Header.Get("X-Sequence-Number")
-	filename := req.Header.Get("X-Filename")
 
-	if seqStr == "" || filename == "" {
+	if seqStr == "" {
 		http.Error(w, "Missing metadata headers", http.StatusBadRequest)
 		return
 	}
 
 	seqNum, err := strconv.ParseInt(seqStr, 10, 64)
-	if err != nil {
+	if err != nil || seqNum < 0 {
 		http.Error(w, "Invalid sequence number", http.StatusBadRequest)
 		return
 	}
 
-	// Prevent directory traversal attacks by taking only the base name of the file
-	filename = filepath.Base(filename)
-	if !strings.HasSuffix(filename, ".ts") {
-		http.Error(w, "Invalid file format", http.StatusBadRequest)
-		return
-	}
+	// The on-disk name is derived from the sequence number, never from client input,
+	// so duplicate or retried uploads map to the same file and cannot escape TempDir.
+	filename := fmt.Sprintf("chunk_%d.ts", seqNum)
 
 	// 2. Read Body (hard limit to prevent OOM and truncated/corrupt chunks)
 	bodyBytes, err := io.ReadAll(http.MaxBytesReader(w, req.Body, maxUploadBodySize))
@@ -176,10 +172,26 @@ func (r *Receiver) handleUpload(w http.ResponseWriter, req *http.Request, sessio
 	// 4. Ensure streamer is running for this session
 	r.server.StartSessionStreamer(r.server.ctx, session)
 
-	// 5. Save Chunk to Temp Directory
+	// A retried upload of a chunk we already hold (or already played) must not touch
+	// the file the streamer may be reading.
+	if !session.Buffer.ShouldAccept(seqNum) {
+		log.Printf("[Receiver] Ignoring duplicate or late chunk %s for path: %s", filename, session.Path)
+		session.Mu.Lock()
+		session.LastActivity = time.Now()
+		session.Mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("Chunk ignored"))
+		return
+	}
+
+	// 5. Save Chunk to Temp Directory (write + rename so readers never see partial data)
 	filePath := filepath.Join(session.TempDir, filename)
-	err = os.WriteFile(filePath, decryptedData, 0644)
+	partPath := filepath.Join(session.TempDir, "."+filename+".part")
+	if err = os.WriteFile(partPath, decryptedData, 0644); err == nil {
+		err = os.Rename(partPath, filePath)
+	}
 	if err != nil {
+		_ = os.Remove(partPath)
 		log.Printf("[Receiver] Failed to save chunk to disk for %s: %v", session.Path, err)
 		http.Error(w, "Failed to write file", http.StatusInternalServerError)
 		return

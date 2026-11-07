@@ -140,3 +140,27 @@ func TestRunStreamPreservesSequenceState(t *testing.T) {
 		t.Fatalf("sequence state after runStream = %q, %v; want 42", data, err)
 	}
 }
+
+func TestMonitorDrainQueuesFinalSegment(t *testing.T) {
+	tempDir := t.TempDir()
+	playlistPath := filepath.Join(tempDir, "index.m3u8")
+	chunkChan := make(chan ChunkJob, 4)
+	ingester := NewIngester(&common.ClientConfig{}, common.StreamConfig{StreamPath: "s", TempDir: tempDir}, chunkChan)
+	seqRegexp := regexp.MustCompile(`chunk_(\d+)\.ts`)
+
+	drain := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ingester.monitorPlaylistDrain(context.Background(), drain, playlistPath, seqRegexp)
+	}()
+
+	// Playlist appears right before FFmpeg exits, faster than the poll interval.
+	writePlaylist(t, playlistPath, "r1_chunk_0.ts")
+	close(drain)
+	<-done
+
+	if job := receiveChunkJob(t, chunkChan); job.Path != filepath.Join(tempDir, "r1_chunk_0.ts") {
+		t.Fatalf("queued path = %q", job.Path)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -181,6 +182,11 @@ func (u *Uploader) uploadWithRetry(ctx context.Context, job ChunkJob, maxRetries
 		err := u.uploadChunk(ctx, job)
 		if err == nil {
 			return nil
+		}
+
+		if errors.Is(err, os.ErrNotExist) {
+			// The chunk file is gone; retrying cannot help.
+			return fmt.Errorf("chunk file missing: %w", err)
 		}
 
 		lastErr = err

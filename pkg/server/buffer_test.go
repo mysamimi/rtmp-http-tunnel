@@ -72,3 +72,27 @@ func TestBufferWaitUntilReadyUsesSmallerThresholdForResume(t *testing.T) {
 		t.Fatalf("nextSeq = %d, want 100", buf.nextSeq)
 	}
 }
+
+func TestBufferPopSkipsMissingChunkQuicklyWhenLaterChunksExist(t *testing.T) {
+	tempDir := t.TempDir()
+	buf := NewBuffer(&common.ServerConfig{BufferDuration: 2, ChunkDuration: 1}, tempDir)
+	buf.Add(0, filepath.Join(tempDir, "chunk_0.ts"))
+	buf.Add(2, filepath.Join(tempDir, "chunk_2.ts")) // chunk 1 never arrives
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if _, seq, err := buf.Pop(ctx); err != nil || seq != 0 {
+		t.Fatalf("first Pop = seq %d, err %v; want seq 0", seq, err)
+	}
+
+	start := time.Now()
+	if _, _, err := buf.Pop(ctx); err == nil {
+		t.Fatal("expected a timeout error for the missing chunk")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("skipping a missing chunk took %v, want about one chunk duration", elapsed)
+	}
+	if _, seq, err := buf.Pop(ctx); err != nil || seq != 2 {
+		t.Fatalf("Pop after skip = seq %d, err %v; want seq 2", seq, err)
+	}
+}
