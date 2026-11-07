@@ -188,3 +188,32 @@ func TestScanPlaylistUsesSegmentModTimeForAge(t *testing.T) {
 		t.Fatalf("chunk age = %v, want about 45s (segment write time, not queue time)", age)
 	}
 }
+
+func TestWarnIfSegmentTooLong(t *testing.T) {
+	ingester := NewIngester(&common.ClientConfig{ChunkDuration: 2}, common.StreamConfig{StreamPath: "s", TempDir: t.TempDir()}, make(chan ChunkJob, 1))
+
+	ingester.warnIfSegmentTooLong(2.04)
+	if ingester.warnedLongSegment {
+		t.Fatal("warned for a segment within tolerance")
+	}
+	ingester.warnIfSegmentTooLong(6.0)
+	if !ingester.warnedLongSegment {
+		t.Fatal("did not warn for a 6s segment with chunk_duration 2")
+	}
+}
+
+func TestScanPlaylistReadsExtinfDurations(t *testing.T) {
+	tempDir := t.TempDir()
+	playlistPath := filepath.Join(tempDir, "index.m3u8")
+	ingester := NewIngester(&common.ClientConfig{ChunkDuration: 2}, common.StreamConfig{StreamPath: "s", TempDir: tempDir}, make(chan ChunkJob, 2))
+	content := "#EXTM3U\n#EXT-X-VERSION:3\n#EXTINF:6.000000,\nr1_chunk_0.ts\n"
+	if err := os.WriteFile(playlistPath, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	last := int64(-1)
+	ingester.scanPlaylist(context.Background(), playlistPath, regexp.MustCompile(`chunk_(\d+)\.ts`), &last)
+	if !ingester.warnedLongSegment {
+		t.Fatal("6s EXTINF segment did not trigger the keyframe warning")
+	}
+}

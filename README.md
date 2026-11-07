@@ -165,6 +165,12 @@ Run the client program:
 go run main.go -mode client -config config.json
 ```
 
+### Encoder Settings (important)
+The tunnel copies the stream without re-encoding (`-c copy`), so it can only cut chunks at keyframes and YouTube receives exactly what your encoder produces:
+- **Keyframe interval: 2 seconds** (or whatever `chunk_duration` is set to). With a longer interval (OBS "Auto" is often more), chunks become as long as the keyframe interval (e.g. 6s), and the buffer length, expiry and re-buffer timings no longer match `chunk_duration`. The client logs a warning when it sees such segments.
+- **Video H.264 and audio AAC**, which is what YouTube RTMP ingest expects (no transcoding happens here).
+- A constant bitrate that your *upload* link can sustain with some margin; a link slower than the stream cannot be fixed by buffering.
+
 ### 3. Start Streaming
 Configure your encoder(s) (e.g., OBS) to stream to their respective ports.
 For example, for the first stream:

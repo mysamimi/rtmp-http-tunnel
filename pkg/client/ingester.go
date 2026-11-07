@@ -24,6 +24,7 @@ type Ingester struct {
 	seqMu             sync.Mutex
 	nextUploadSeq     int64
 	sequenceStatePath string
+	warnedLongSegment bool
 }
 
 type ChunkJob struct {
@@ -275,8 +276,17 @@ func (in *Ingester) scanPlaylist(ctx context.Context, playlistPath string, seqRe
 		return true
 	}
 
+	var segmentDuration float64
 	for _, line := range strings.Split(string(content), "\n") {
 		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "#EXTINF:") {
+			value := strings.TrimPrefix(line, "#EXTINF:")
+			if i := strings.Index(value, ","); i >= 0 {
+				value = value[:i]
+			}
+			segmentDuration, _ = strconv.ParseFloat(value, 64)
+			continue
+		}
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
@@ -293,6 +303,7 @@ func (in *Ingester) scanPlaylist(ctx context.Context, playlistPath string, seqRe
 		}
 
 		if hlsSeq > *lastQueuedSeq {
+			in.warnIfSegmentTooLong(segmentDuration)
 			filePath := filepath.Join(in.stream.TempDir, line)
 			uploadSeq := in.nextSequence()
 			uploadFilename := fmt.Sprintf("chunk_%d.ts", uploadSeq)
@@ -321,6 +332,18 @@ func (in *Ingester) scanPlaylist(ctx context.Context, playlistPath string, seqRe
 		}
 	}
 	return true
+}
+
+// warnIfSegmentTooLong explains the usual cause of oversized chunks. With -c copy FFmpeg
+// can only cut at keyframes, so a keyframe interval longer than chunk_duration produces
+// longer chunks, which makes the server's buffer sizing and chunk expiry inaccurate.
+func (in *Ingester) warnIfSegmentTooLong(seconds float64) {
+	if in.warnedLongSegment || in.cfg.ChunkDuration <= 0 || seconds < float64(in.cfg.ChunkDuration)+1 {
+		return
+	}
+	in.warnedLongSegment = true
+	log.Printf("[Ingester %s] WARNING: segment is %.1fs long but chunk_duration is %ds. The encoder's keyframe interval is too long; set it to %ds (or less) so chunks match chunk_duration.",
+		in.stream.StreamPath, seconds, in.cfg.ChunkDuration, in.cfg.ChunkDuration)
 }
 
 func (in *Ingester) nextSequence() int64 {
