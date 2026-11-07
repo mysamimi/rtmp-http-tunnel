@@ -57,7 +57,7 @@ Copy `config.json.example` to `config.json` and adjust parameters:
     "use_docker": true,
     "docker_image": "linuxserver/ffmpeg",
     "max_upload_retries": 5,
-    "tls_pin_sha256": "hex-sha256-of-the-server-certificate",
+    "tls_pin_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
     "streams": [
       {
         "stream_path": "stream_abc123",
@@ -79,6 +79,7 @@ Copy `config.json.example` to `config.json` and adjust parameters:
     "rebuffer_duration": 4,
     "chunk_duration": 2,
     "inactive_session_timeout": 120,
+    "max_buffered_chunks": 90,
     "tls_cert_file": "/etc/letsencrypt/live/your-server-ip/fullchain.pem",
     "tls_key_file": "/etc/letsencrypt/live/your-server-ip/privkey.pem",
     "use_docker": true,
@@ -145,7 +146,7 @@ Validation checks include:
 - Stream paths may contain only letters, numbers, `.`, `_`, and `-`; slashes are not allowed because paths are used in `/s/{stream_path}/...` routes.
 - Stream paths must be unique within the selected client or server configuration.
 - Every stream needs its own `temp_dir` (shared directories would overwrite each other's chunks and sequence state), and client listener inputs must not reuse the same port/protocol.
-- `tls_pin_sha256`, if set, must be a 64 character hex SHA-256 fingerprint (the placeholder in `config.json.example` must be replaced or removed).
+- `tls_pin_sha256`, if set, must be a 64 character hex SHA-256 fingerprint (the all-zero placeholder in `config.json.example` is well-formed but never matches: replace it with your server's fingerprint, or remove the field when the server has a CA-signed certificate).
 - `concurrency` and `max_upload_retries` must not be negative.
 - TLS certificate and key paths must be configured together.
 

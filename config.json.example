@@ -9,7 +9,7 @@
     "use_docker": true,
     "docker_image": "linuxserver/ffmpeg",
     "max_upload_retries": 5,
-    "tls_pin_sha256": "hex-sha256-of-the-server-certificate",
+    "tls_pin_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
     "streams": [
       {
         "stream_path": "stream_abc123",
@@ -26,6 +26,7 @@
     "rebuffer_duration": 4,
     "chunk_duration": 2,
     "inactive_session_timeout": 120,
+    "max_buffered_chunks": 90,
     "tls_cert_file": "/etc/letsencrypt/live/your-server-ip/fullchain.pem",
     "tls_key_file": "/etc/letsencrypt/live/your-server-ip/privkey.pem",
     "use_docker": true,
