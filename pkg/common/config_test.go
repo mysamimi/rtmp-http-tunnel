@@ -95,3 +95,20 @@ func validConfig() *Config {
 		},
 	}
 }
+
+func TestConfigValidateClientTLSPin(t *testing.T) {
+	cfg := validConfig()
+	cfg.Client.TLSPinSHA256 = "AB:CD"
+	if err := cfg.Validate("client"); err == nil {
+		t.Fatal("Validate accepted malformed tls_pin_sha256")
+	}
+
+	cfg.Client.TLSPinSHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	if err := cfg.Validate("client"); err != nil {
+		t.Fatalf("Validate rejected valid pin: %v", err)
+	}
+	cfg.Client.TLSPinSHA256 = "E3:B0:C4:42:98:FC:1C:14:9A:FB:F4:C8:99:6F:B9:24:27:AE:41:E4:64:9B:93:4C:A4:95:99:1B:78:52:B8:55"
+	if err := cfg.Validate("client"); err != nil {
+		t.Fatalf("Validate rejected openssl-style pin: %v", err)
+	}
+}

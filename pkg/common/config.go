@@ -1,6 +1,7 @@
 package common
 
 import (
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -15,15 +16,22 @@ type StreamConfig struct {
 }
 
 type ClientConfig struct {
-	ServerURL        string         `json:"server_url"`
-	AuthToken        string         `json:"auth_token"`
-	ObfuscationKey   string         `json:"obfuscation_key"`
-	Concurrency      int            `json:"concurrency"`
-	ChunkDuration    int            `json:"chunk_duration"`
-	UseDocker        bool           `json:"use_docker"`
-	DockerImage      string         `json:"docker_image"`
-	MaxUploadRetries int            `json:"max_upload_retries"`
-	Streams          []StreamConfig `json:"streams"`
+	ServerURL        string `json:"server_url"`
+	AuthToken        string `json:"auth_token"`
+	ObfuscationKey   string `json:"obfuscation_key"`
+	Concurrency      int    `json:"concurrency"`
+	ChunkDuration    int    `json:"chunk_duration"`
+	UseDocker        bool   `json:"use_docker"`
+	DockerImage      string `json:"docker_image"`
+	MaxUploadRetries int    `json:"max_upload_retries"`
+	// TLS verification of the server. By default the certificate is verified against
+	// the system roots. Use TLSPinSHA256 (hex SHA-256 of the server's leaf certificate)
+	// for self-signed certificates, or TLSCAFile to trust a private CA.
+	// InsecureSkipVerify disables verification entirely and should be avoided.
+	TLSPinSHA256       string         `json:"tls_pin_sha256"`
+	TLSCAFile          string         `json:"tls_ca_file"`
+	InsecureSkipVerify bool           `json:"insecure_skip_verify"`
+	Streams            []StreamConfig `json:"streams"`
 }
 
 type ServerStreamConfig struct {
@@ -93,6 +101,11 @@ func validateClientConfig(cfg ClientConfig) error {
 	}
 	if err := requireNonEmpty("client.obfuscation_key", cfg.ObfuscationKey); err != nil {
 		return err
+	}
+	if cfg.TLSPinSHA256 != "" {
+		if _, err := ParsePin(cfg.TLSPinSHA256); err != nil {
+			return fmt.Errorf("client.tls_pin_sha256: %w", err)
+		}
 	}
 	if cfg.ChunkDuration <= 0 {
 		return fmt.Errorf("client.chunk_duration must be greater than zero")
@@ -211,4 +224,15 @@ func validateStreamPath(name, value string) error {
 		}
 	}
 	return nil
+}
+
+// ParsePin decodes a hex SHA-256 certificate fingerprint. Colons, spaces and
+// upper-case letters (as printed by openssl) are accepted.
+func ParsePin(pin string) ([]byte, error) {
+	cleaned := strings.ToLower(strings.NewReplacer(":", "", " ", "").Replace(pin))
+	raw, err := hex.DecodeString(cleaned)
+	if err != nil || len(raw) != 32 {
+		return nil, fmt.Errorf("must be a 64 character hex SHA-256 fingerprint")
+	}
+	return raw, nil
 }

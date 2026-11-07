@@ -57,6 +57,7 @@ Copy `config.json.example` to `config.json` and adjust parameters:
     "use_docker": true,
     "docker_image": "linuxserver/ffmpeg",
     "max_upload_retries": 5,
+    "tls_pin_sha256": "hex-sha256-of-the-server-certificate",
     "streams": [
       {
         "stream_path": "stream_abc123",
@@ -102,6 +103,13 @@ Copy `config.json.example` to `config.json` and adjust parameters:
 - `"concurrency"`: Number of concurrent HTTP uploader workers per client stream.
 - `"max_upload_retries"`: Number of times client attempts uploading a chunk before skipping/discarding.
 - `"inactive_session_timeout"`: Server-side inactivity timeout (seconds). If no chunk uploads are received for a stream within this duration, the server terminates its streamer process and cleans up.
+- `"tls_pin_sha256"` (Client): Hex SHA-256 fingerprint of the server's (leaf) certificate. When set, only that exact certificate is accepted, which is the recommended way to use a self-signed certificate. Get it on the server with:
+  ```bash
+  openssl x509 -in fullchain.pem -noout -fingerprint -sha256
+  ```
+  (colons and upper case are accepted).
+- `"tls_ca_file"` (Client): Path to a PEM file with a private CA to trust instead of the system roots.
+- `"insecure_skip_verify"` (Client): Disables server certificate verification entirely. Off by default; avoid it, since anyone on the path can then read the auth token and stream.
 - `"auth_token"`: Required shared bearer token. The client and server values must match.
 - `"obfuscation_key"`: Required shared XOR key. The client and server values must match.
 - `"buffer_duration"` and `"chunk_duration"`: On the server, `buffer_duration` must be greater than `chunk_duration`; otherwise the server refuses to start.
@@ -168,7 +176,8 @@ Once OBS starts streaming, the client segments, obfuscates, and relays the chunk
 
 - Upload requests are capped at 50 MB per chunk. Oversized chunks are rejected with HTTP `413` so corrupted/truncated media is not accepted silently.
 - The client discards chunks that are too old for the server buffer window. If the server health endpoint is unreachable, the client uses a conservative fallback window.
-- HTTPS is recommended for real deployments. The client currently accepts self-signed TLS certificates to simplify VPS setups, so keep `auth_token` strong and private.
+- The client verifies the server's TLS certificate by default. For a self-signed certificate set `tls_pin_sha256` (or `tls_ca_file`); `insecure_skip_verify` exists only as an explicit opt-out. Plain HTTP is supported but unencrypted, so use HTTPS for real deployments.
+- Requests with a missing or wrong `auth_token`, unknown paths and the global `/health` without a token all get the same plain `404 page not found` response, so the server does not advertise itself to probes. Consequently a `404` seen by the client can mean a wrong token, a wrong `stream_path` or a wrong `server_url`.
 
 ---
 
@@ -176,6 +185,9 @@ Once OBS starts streaming, the client segments, obfuscates, and relays the chunk
 
 ### Missing or Invalid Config
 If startup fails with `Invalid configuration`, fix the field named in the log. The application does not run with placeholder defaults.
+
+### TLS Errors (`x509: certificate signed by unknown authority`, `fingerprint ... does not match`)
+The server certificate is verified by default. Set `tls_pin_sha256` to the server certificate's fingerprint (see Key Parameters). After renewing a certificate, update the pin, unless the key and certificate are reused.
 
 ### Decryption Warning
 If the server logs:

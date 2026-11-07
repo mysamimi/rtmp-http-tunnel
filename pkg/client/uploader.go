@@ -3,7 +3,6 @@ package client
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,10 +25,24 @@ type Uploader struct {
 	maxChunkAge time.Duration
 }
 
-func NewUploader(cfg *common.ClientConfig, stream common.StreamConfig, chunkChan <-chan ChunkJob) *Uploader {
-	// Custom transport allowing self-signed certificates for ease of use with personal VPS
+func NewUploader(cfg *common.ClientConfig, stream common.StreamConfig, chunkChan <-chan ChunkJob) (*Uploader, error) {
+	tlsCfg, err := newTLSConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.InsecureSkipVerify && cfg.TLSPinSHA256 == "" {
+		log.Printf("[Uploader %s] WARNING: insecure_skip_verify is enabled; the server certificate is NOT verified. Prefer tls_pin_sha256.", stream.StreamPath)
+	}
+
+	concurrency := cfg.Concurrency
+	if concurrency <= 0 {
+		concurrency = 4
+	}
+	// Keep one idle connection per worker so chunks reuse TLS sessions instead of re-handshaking.
 	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		TLSClientConfig:     tlsCfg,
+		MaxIdleConnsPerHost: concurrency,
+		IdleConnTimeout:     90 * time.Second,
 	}
 
 	return &Uploader{
@@ -40,7 +53,7 @@ func NewUploader(cfg *common.ClientConfig, stream common.StreamConfig, chunkChan
 			Transport: tr,
 			Timeout:   30 * time.Second,
 		},
-	}
+	}, nil
 }
 
 func (u *Uploader) discoverBufferConfig(ctx context.Context) {
@@ -68,7 +81,7 @@ func (u *Uploader) discoverBufferConfig(ctx context.Context) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		log.Printf("[Uploader %s] Health check returned status %d. Using fallback max age %v.", u.stream.StreamPath, resp.StatusCode, u.maxChunkAge)
+		log.Printf("[Uploader %s] Health check returned status %d%s. Using fallback max age %v.", u.stream.StreamPath, resp.StatusCode, statusHint(resp.StatusCode), u.maxChunkAge)
 		return
 	}
 
@@ -235,8 +248,17 @@ func (u *Uploader) uploadChunk(ctx context.Context, job ChunkJob) error {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("server returned non-200 code: %d, body: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("server returned non-200 code: %d, body: %s%s", resp.StatusCode, string(body), statusHint(resp.StatusCode))
 	}
 
 	return nil
+}
+
+// statusHint explains the deliberately uninformative 404 the server returns for
+// unauthenticated requests, so misconfiguration is still easy to diagnose.
+func statusHint(code int) string {
+	if code == http.StatusNotFound {
+		return " (404 can mean a wrong auth_token, an unknown stream_path, or a wrong server_url)"
+	}
+	return ""
 }

@@ -64,3 +64,46 @@ func TestHandleUploadDuplicateDoesNotRewriteFile(t *testing.T) {
 		t.Fatalf("negative sequence status = %d, want 400", w.Code)
 	}
 }
+
+func TestUnauthenticatedRequestsLookLikeUnknownURLs(t *testing.T) {
+	r, session := newTestReceiver(t)
+	r.cfg.AuthToken = "secret"
+	r.server.sessions = map[string]*StreamSession{"p": session}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/s/", r.handleStreamRequest)
+	mux.HandleFunc("/health", r.handleGlobalHealth)
+
+	do := func(method, path, token string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		w := httptest.NewRecorder()
+		mux.ServeHTTP(w, req)
+		return w
+	}
+
+	baseline := do(http.MethodGet, "/nothing-here", "")
+	for _, c := range []struct{ method, path, token string }{
+		{http.MethodGet, "/health", ""},
+		{http.MethodGet, "/health", "wrong"},
+		{http.MethodGet, "/s/p/health", ""},
+		{http.MethodPost, "/s/p/upload", "wrong"},
+		{http.MethodGet, "/s/unknown/health", ""},
+		{http.MethodGet, "/s/p", ""},
+	} {
+		w := do(c.method, c.path, c.token)
+		if w.Code != baseline.Code || w.Body.String() != baseline.Body.String() {
+			t.Errorf("%s %s (token %q) = %d %q, want same as unknown URL (%d %q)",
+				c.method, c.path, c.token, w.Code, w.Body.String(), baseline.Code, baseline.Body.String())
+		}
+	}
+
+	if w := do(http.MethodGet, "/s/p/health", "secret"); w.Code != http.StatusOK {
+		t.Errorf("authorized health = %d, want 200", w.Code)
+	}
+	if w := do(http.MethodGet, "/health", "secret"); w.Code != http.StatusOK {
+		t.Errorf("authorized global health = %d, want 200", w.Code)
+	}
+}

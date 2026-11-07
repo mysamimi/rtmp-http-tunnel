@@ -21,6 +21,11 @@ func NewClient(cfg *common.ClientConfig) *Client {
 
 // Start starts the entire client pipeline (orchestrates one goroutine per stream)
 func (c *Client) Start(ctx context.Context) error {
+	// Fail fast on TLS misconfiguration instead of once per stream.
+	if _, err := newTLSConfig(c.cfg); err != nil {
+		return err
+	}
+
 	var wg sync.WaitGroup
 	for _, stream := range c.cfg.Streams {
 		wg.Add(1)
@@ -49,7 +54,11 @@ func runStream(ctx context.Context, cfg *common.ClientConfig, sc common.StreamCo
 	chunkChan := make(chan ChunkJob, 100)
 
 	ingester := NewIngester(cfg, sc, chunkChan)
-	uploader := NewUploader(cfg, sc, chunkChan)
+	uploader, err := NewUploader(cfg, sc, chunkChan)
+	if err != nil {
+		log.Printf("[Client] [Stream %s] Cannot create uploader: %v", sc.StreamPath, err)
+		return
+	}
 
 	// Run uploader in a separate goroutine
 	uploaderCtx, uploaderCancel := context.WithCancel(ctx)

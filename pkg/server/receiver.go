@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mysamimi/rtmp-http-tunnel/pkg/common"
@@ -18,9 +20,15 @@ import (
 
 const maxUploadBodySize = 50 * 1024 * 1024
 
+const unauthorizedLogInterval = 10 * time.Second
+
 type Receiver struct {
 	cfg    *common.ServerConfig
 	server *Server
+
+	logMu              sync.Mutex
+	lastAuthLog        time.Time
+	suppressedAuthLogs int
 }
 
 func NewReceiver(cfg *common.ServerConfig, server *Server) *Receiver {
@@ -37,8 +45,9 @@ func (r *Receiver) Start(ctx context.Context) error {
 	mux.HandleFunc("/health", r.handleGlobalHealth)
 
 	server := &http.Server{
-		Addr:    r.cfg.ListenAddr,
-		Handler: mux,
+		Addr:              r.cfg.ListenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	// Set up graceful shutdown listener
@@ -69,8 +78,36 @@ func (r *Receiver) Start(ctx context.Context) error {
 }
 
 func (r *Receiver) handleGlobalHealth(w http.ResponseWriter, req *http.Request) {
+	if !r.authorized(req) {
+		r.rejectUnauthorized(w, req)
+		return
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("OK"))
+}
+
+// authorized checks the bearer token in constant time.
+func (r *Receiver) authorized(req *http.Request) bool {
+	expected := []byte("Bearer " + r.cfg.AuthToken)
+	got := []byte(req.Header.Get("Authorization"))
+	return subtle.ConstantTimeCompare(got, expected) == 1
+}
+
+// rejectUnauthorized answers exactly like an unknown URL (a plain 404) so that an
+// active prober cannot tell this service apart from an ordinary web server.
+// Failures are logged at most once every few seconds to avoid log flooding.
+func (r *Receiver) rejectUnauthorized(w http.ResponseWriter, req *http.Request) {
+	r.logMu.Lock()
+	now := time.Now()
+	if now.Sub(r.lastAuthLog) >= unauthorizedLogInterval {
+		log.Printf("[Receiver] Unauthorized request to %s from %s (%d similar suppressed)", req.URL.Path, req.RemoteAddr, r.suppressedAuthLogs)
+		r.lastAuthLog = now
+		r.suppressedAuthLogs = 0
+	} else {
+		r.suppressedAuthLogs++
+	}
+	r.logMu.Unlock()
+	http.NotFound(w, req)
 }
 
 func (r *Receiver) handleStreamRequest(w http.ResponseWriter, req *http.Request) {
@@ -84,14 +121,9 @@ func (r *Receiver) handleStreamRequest(w http.ResponseWriter, req *http.Request)
 	action := parts[2]
 
 	// 1. Verify Authentication Token
-	authHeader := req.Header.Get("Authorization")
-	if r.cfg.AuthToken != "" {
-		expectedHeader := "Bearer " + r.cfg.AuthToken
-		if authHeader != expectedHeader {
-			log.Printf("[Receiver] Unauthorized request to %s from %s", req.URL.Path, req.RemoteAddr)
-			http.Error(w, "Unauthorized", http.StatusUnauthorized)
-			return
-		}
+	if !r.authorized(req) {
+		r.rejectUnauthorized(w, req)
+		return
 	}
 
 	// 2. Resolve Stream Session

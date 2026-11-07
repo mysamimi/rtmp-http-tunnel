@@ -9,6 +9,7 @@
     "use_docker": true,
     "docker_image": "linuxserver/ffmpeg",
     "max_upload_retries": 5,
+    "tls_pin_sha256": "hex-sha256-of-the-server-certificate",
     "streams": [
       {
         "stream_path": "stream_abc123",
